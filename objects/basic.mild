@@ -1,0 +1,7 @@
+LINK
+3 0 0
+.text 1000 2500 RP
+.data 4000 C00  RWP
+.bss  5000 1900 RW
+DEADBEEF
+
