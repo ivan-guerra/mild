@@ -76,7 +76,7 @@ enum SegNum {
 impl Display for SegNum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SegNum::Segment(num) => write!(f, "Segment({:X})", num),
+            SegNum::Segment(num) => write!(f, "SegNum({:X})", num),
             SegNum::AbsOrUndef => write!(f, "Absolute/Undefined"),
         }
     }
@@ -116,26 +116,73 @@ impl Display for Symbol {
 }
 
 #[derive(Debug)]
+enum RelocationType {
+    Absolute,
+    Relative,
+}
+
+impl Display for RelocationType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RelocationType::Absolute => write!(f, "Absolute"),
+            RelocationType::Relative => write!(f, "Relative"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Relocation {
+    location: u32,
+    seg: SegNum,
+    relref: u8,
+    reltype: RelocationType,
+}
+
+impl Display for Relocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Relocation {{ location: {:X}, seg: {}, relref: {:X}, reltype: {} }}",
+            self.location, self.seg, self.relref, self.reltype
+        )
+    }
+}
+
+#[derive(Debug)]
 pub struct Object {
     sizes: Sizes,
     segments: Vec<Segment>,
     symtab: Vec<Symbol>,
+    relocs: Vec<Relocation>,
 }
 
 impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Object {{")?;
         writeln!(f, "  {},", self.sizes)?;
-        writeln!(f, "  segments: [")?;
-        for segment in &self.segments {
-            writeln!(f, "    {},", segment)?;
+        if !self.segments.is_empty() {
+            writeln!(f, "  segments: [")?;
+            for segment in &self.segments {
+                writeln!(f, "    {},", segment)?;
+            }
+            writeln!(f, "  ]")?;
         }
-        writeln!(f, "  ]")?;
-        writeln!(f, "  symtab: [")?;
-        for symbol in &self.symtab {
-            writeln!(f, "    {},", symbol)?;
+
+        if !self.symtab.is_empty() {
+            writeln!(f, "  symtab: [")?;
+            for symbol in &self.symtab {
+                writeln!(f, "    {},", symbol)?;
+            }
+            writeln!(f, "  ]")?;
         }
-        writeln!(f, "  ]")?;
+
+        if !self.relocs.is_empty() {
+            writeln!(f, "  relocs: [")?;
+            for reloc in &self.relocs {
+                writeln!(f, "    {},", reloc)?;
+            }
+            writeln!(f, "  ]")?;
+        }
         write!(f, "}}")
     }
 }
@@ -308,6 +355,69 @@ fn load_symbols(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Symbol>>
     Ok(symbols)
 }
 
+fn load_relocations(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Relocation>> {
+    let mut relocations = Vec::new();
+    let start_idx = 2 + sizes.num_segments as usize + sizes.num_symbols as usize;
+
+    for i in 0..sizes.num_relocs as usize {
+        let line_index = start_idx + i;
+        if line_index >= contents.len() {
+            bail!("Invalid object file: insufficient lines for relocations");
+        }
+
+        let line = contents[line_index];
+        let mut parts = line.split_whitespace();
+
+        let location = u32::from_str_radix(
+            parts
+                .next()
+                .context(format!("Missing location for relocation {}", i))?,
+            16,
+        )
+        .context(format!("Failed to parse location for relocation {}", i))?;
+
+        let segnum = u8::from_str_radix(
+            parts
+                .next()
+                .context(format!("Missing segment number for relocation {}", i))?,
+            16,
+        )
+        .context(format!(
+            "Failed to parse segment number for relocation {}",
+            i
+        ))?;
+        let segnum = SegNum::Segment(segnum);
+
+        let relref = u8::from_str_radix(
+            parts
+                .next()
+                .context(format!("Missing reference for relocation {}", i))?,
+            16,
+        )
+        .context(format!("Failed to parse reference for relocation {}", i))?;
+
+        let reltype_str = parts
+            .next()
+            .context(format!("Missing type for relocation {}", i))?;
+        let reltype = match reltype_str {
+            "A4" => RelocationType::Absolute,
+            "R4" => RelocationType::Relative,
+            _ => bail!(format!(
+                "Invalid relocation type '{}' for relocation {}",
+                reltype_str, i
+            ),),
+        };
+        relocations.push(Relocation {
+            location,
+            seg: segnum,
+            relref,
+            reltype,
+        });
+    }
+
+    Ok(relocations)
+}
+
 pub fn load_object(file: &Path) -> anyhow::Result<Object> {
     let contents = fs::read_to_string(file).with_context(|| "Failed to read object file")?;
     let contents: Vec<&str> = contents.lines().collect();
@@ -316,11 +426,13 @@ pub fn load_object(file: &Path) -> anyhow::Result<Object> {
     let sizes = load_sizes(&contents)?;
     let segments = load_segments(&contents, sizes.num_segments)?;
     let symtab = load_symbols(&contents, &sizes)?;
+    let relocs = load_relocations(&contents, &sizes)?;
 
     Ok(Object {
         sizes,
         segments,
         symtab,
+        relocs,
     })
 }
 
@@ -723,5 +835,185 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].name, "foo");
         assert_eq!(result[1].name, "bar");
+    }
+
+    #[test]
+    fn load_relocations_valid_relocations_ok() {
+        let content = vec!["LINK", "0 0 3", "1100 1 1 A4", "4100 2 2 R4", "8000 0 3 A4"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 3,
+        };
+        let result = load_relocations(&content, &sizes).unwrap();
+
+        assert_eq!(result.len(), 3);
+
+        assert_eq!(result[0].location, 0x1100);
+        assert!(matches!(result[0].seg, SegNum::Segment(1)));
+        assert_eq!(result[0].relref, 1);
+        assert!(matches!(result[0].reltype, RelocationType::Absolute));
+
+        assert_eq!(result[1].location, 0x4100);
+        assert!(matches!(result[1].seg, SegNum::Segment(2)));
+        assert_eq!(result[1].relref, 2);
+        assert!(matches!(result[1].reltype, RelocationType::Relative));
+
+        assert_eq!(result[2].location, 0x8000);
+        assert!(matches!(result[2].seg, SegNum::Segment(0)));
+        assert_eq!(result[2].relref, 3);
+        assert!(matches!(result[2].reltype, RelocationType::Absolute));
+    }
+
+    #[test]
+    fn load_relocations_zero_relocations_ok() {
+        let content = vec!["LINK", "0 0 0"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        let result = load_relocations(&content, &sizes).unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn load_relocations_insufficient_lines_error() {
+        let content = vec!["LINK", "0 0 2", "1100 1 1 A4"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 2,
+        };
+        assert!(load_relocations(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_relocations_missing_location_error() {
+        let content = vec!["LINK", "0 0 1", ""];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 1,
+        };
+        assert!(load_relocations(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_relocations_missing_segment_number_error() {
+        let content = vec!["LINK", "0 0 1", "1100"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 1,
+        };
+        assert!(load_relocations(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_relocations_missing_reference_error() {
+        let content = vec!["LINK", "0 0 1", "1100 1"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 1,
+        };
+        assert!(load_relocations(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_relocations_missing_type_error() {
+        let content = vec!["LINK", "0 0 1", "1100 1 1"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 1,
+        };
+        assert!(load_relocations(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_relocations_invalid_location_format_error() {
+        let content = vec!["LINK", "0 0 1", "INVALID 1 1 A4"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 1,
+        };
+        assert!(load_relocations(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_relocations_invalid_segment_number_format_error() {
+        let content = vec!["LINK", "0 0 1", "1100 INVALID 1 A4"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 1,
+        };
+        assert!(load_relocations(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_relocations_invalid_reference_format_error() {
+        let content = vec!["LINK", "0 0 1", "1100 1 INVALID A4"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 1,
+        };
+        assert!(load_relocations(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_relocations_invalid_type_error() {
+        let content = vec!["LINK", "0 0 1", "1100 1 1 X4"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 1,
+        };
+        assert!(load_relocations(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_relocations_extra_whitespace_ok() {
+        let content = vec!["LINK", "0 0 1", "  1100   1   1   A4  "];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 1,
+        };
+        let result = load_relocations(&content, &sizes).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].location, 0x1100);
+        assert!(matches!(result[0].seg, SegNum::Segment(1)));
+        assert_eq!(result[0].relref, 1);
+        assert!(matches!(result[0].reltype, RelocationType::Absolute));
+    }
+
+    #[test]
+    fn load_relocations_with_segments_and_symbols_offset_ok() {
+        let content = vec![
+            "LINK",
+            "2 2 2",
+            ".text 1000 2500 RP",
+            ".data 4000 C00 RWP",
+            "foo 1234 1 D",
+            "bar 5678 2 U",
+            "1100 1 1 A4",
+            "4100 2 2 R4",
+        ];
+        let sizes = Sizes {
+            num_segments: 2,
+            num_symbols: 2,
+            num_relocs: 2,
+        };
+        let result = load_relocations(&content, &sizes).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].location, 0x1100);
+        assert_eq!(result[1].location, 0x4100);
     }
 }
