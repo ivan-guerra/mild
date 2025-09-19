@@ -68,9 +68,58 @@ impl Display for Segment {
 }
 
 #[derive(Debug)]
+enum SegNum {
+    Segment(u8),
+    AbsOrUndef,
+}
+
+impl Display for SegNum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SegNum::Segment(num) => write!(f, "Segment({:X})", num),
+            SegNum::AbsOrUndef => write!(f, "Absolute/Undefined"),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SymbolType {
+    Defined,
+    Undefined,
+}
+
+impl Display for SymbolType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SymbolType::Defined => write!(f, "Defined"),
+            SymbolType::Undefined => write!(f, "Undefined"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Symbol {
+    name: String,
+    value: u32,
+    segnum: SegNum,
+    symtype: SymbolType,
+}
+
+impl Display for Symbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Symbol {{ name: {}, value: {:X}, segnum: {}, symtype: {} }}",
+            self.name, self.value, self.segnum, self.symtype
+        )
+    }
+}
+
+#[derive(Debug)]
 pub struct Object {
     sizes: Sizes,
     segments: Vec<Segment>,
+    symtab: Vec<Symbol>,
 }
 
 impl Display for Object {
@@ -80,6 +129,11 @@ impl Display for Object {
         writeln!(f, "  segments: [")?;
         for segment in &self.segments {
             writeln!(f, "    {},", segment)?;
+        }
+        writeln!(f, "  ]")?;
+        writeln!(f, "  symtab: [")?;
+        for symbol in &self.symtab {
+            writeln!(f, "    {},", symbol)?;
         }
         writeln!(f, "  ]")?;
         write!(f, "}}")
@@ -192,6 +246,68 @@ fn load_segments(contents: &[&str], num_segments: u32) -> anyhow::Result<Vec<Seg
     Ok(segments)
 }
 
+fn load_symbols(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Symbol>> {
+    let mut symbols = Vec::new();
+    let start_index = 2 + sizes.num_segments as usize; // Symbols start after segments
+
+    for i in 0..sizes.num_symbols as usize {
+        let line_index = start_index + i;
+        if line_index >= contents.len() {
+            bail!("Invalid object file: insufficient lines for symbols");
+        }
+
+        let line = contents[line_index];
+        let mut parts = line.split_whitespace();
+
+        let name = parts
+            .next()
+            .context(format!("Missing name for symbol {}", i))?
+            .to_string();
+
+        let value = u32::from_str_radix(
+            parts
+                .next()
+                .context(format!("Missing value for symbol {}", i))?,
+            16,
+        )
+        .context(format!("Failed to parse value for symbol {}", i))?;
+
+        let segnum = u8::from_str_radix(
+            parts
+                .next()
+                .context(format!("Missing segment number for symbol {}", i))?,
+            16,
+        )
+        .context(format!("Failed to parse segment number for symbol {}", i))?;
+        let segnum = if segnum == 0 {
+            SegNum::AbsOrUndef
+        } else {
+            SegNum::Segment(segnum)
+        };
+
+        let symtype_str = parts
+            .next()
+            .context(format!("Missing type for symbol {}", i))?;
+        let symtype = match symtype_str {
+            "D" => SymbolType::Defined,
+            "U" => SymbolType::Undefined,
+            _ => bail!(format!(
+                "Invalid symbol type '{}' for symbol {}",
+                symtype_str, i
+            )),
+        };
+
+        symbols.push(Symbol {
+            name,
+            value,
+            segnum,
+            symtype,
+        });
+    }
+
+    Ok(symbols)
+}
+
 pub fn load_object(file: &Path) -> anyhow::Result<Object> {
     let contents = fs::read_to_string(file).with_context(|| "Failed to read object file")?;
     let contents: Vec<&str> = contents.lines().collect();
@@ -199,8 +315,13 @@ pub fn load_object(file: &Path) -> anyhow::Result<Object> {
     load_magic(&contents)?;
     let sizes = load_sizes(&contents)?;
     let segments = load_segments(&contents, sizes.num_segments)?;
+    let symtab = load_symbols(&contents, &sizes)?;
 
-    Ok(Object { sizes, segments })
+    Ok(Object {
+        sizes,
+        segments,
+        symtab,
+    })
 }
 
 #[cfg(test)]
@@ -406,5 +527,201 @@ mod tests {
         assert_eq!(result[0].address, 0x1000);
         assert_eq!(result[0].len, 0x2500);
         assert_eq!(result[0].desc, SegmentFlags::READ | SegmentFlags::PRESENT);
+    }
+
+    #[test]
+    fn load_symbols_valid_symbols_ok() {
+        let content = vec!["LINK", "0 3 0", "foo 1234 1 D", "bar 5678 2 U", "baz 0 0 U"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 3,
+            num_relocs: 0,
+        };
+        let result = load_symbols(&content, &sizes).unwrap();
+
+        assert_eq!(result.len(), 3);
+
+        assert_eq!(result[0].name, "foo");
+        assert_eq!(result[0].value, 0x1234);
+        assert!(matches!(result[0].segnum, SegNum::Segment(1)));
+        assert!(matches!(result[0].symtype, SymbolType::Defined));
+
+        assert_eq!(result[1].name, "bar");
+        assert_eq!(result[1].value, 0x5678);
+        assert!(matches!(result[1].segnum, SegNum::Segment(2)));
+        assert!(matches!(result[1].symtype, SymbolType::Undefined));
+
+        assert_eq!(result[2].name, "baz");
+        assert_eq!(result[2].value, 0x0);
+        assert!(matches!(result[2].segnum, SegNum::AbsOrUndef));
+        assert!(matches!(result[2].symtype, SymbolType::Undefined));
+    }
+
+    #[test]
+    fn load_symbols_zero_symbols_ok() {
+        let content = vec!["LINK", "0 0 0"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        let result = load_symbols(&content, &sizes).unwrap();
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn load_symbols_insufficient_lines_error() {
+        let content = vec!["LINK", "0 2 0", "foo 1234 1 D"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 2,
+            num_relocs: 0,
+        };
+        assert!(load_symbols(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_symbols_missing_name_error() {
+        let content = vec!["LINK", "0 1 0", ""];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 1,
+            num_relocs: 0,
+        };
+        assert!(load_symbols(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_symbols_missing_value_error() {
+        let content = vec!["LINK", "0 1 0", "foo"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 1,
+            num_relocs: 0,
+        };
+        assert!(load_symbols(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_symbols_missing_segment_number_error() {
+        let content = vec!["LINK", "0 1 0", "foo 1234"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 1,
+            num_relocs: 0,
+        };
+        assert!(load_symbols(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_symbols_missing_type_error() {
+        let content = vec!["LINK", "0 1 0", "foo 1234 1"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 1,
+            num_relocs: 0,
+        };
+        assert!(load_symbols(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_symbols_invalid_value_format_error() {
+        let content = vec!["LINK", "0 1 0", "foo INVALID 1 D"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 1,
+            num_relocs: 0,
+        };
+        assert!(load_symbols(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_symbols_invalid_segment_number_format_error() {
+        let content = vec!["LINK", "0 1 0", "foo 1234 INVALID D"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 1,
+            num_relocs: 0,
+        };
+        assert!(load_symbols(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_symbols_invalid_type_error() {
+        let content = vec!["LINK", "0 1 0", "foo 1234 1 X"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 1,
+            num_relocs: 0,
+        };
+        assert!(load_symbols(&content, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_symbols_zero_segment_number_abs_or_undef_ok() {
+        let content = vec!["LINK", "0 1 0", "foo 1234 0 U"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 1,
+            num_relocs: 0,
+        };
+        let result = load_symbols(&content, &sizes).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert!(matches!(result[0].segnum, SegNum::AbsOrUndef));
+    }
+
+    #[test]
+    fn load_symbols_hexadecimal_values_ok() {
+        let content = vec!["LINK", "0 1 0", "foo DEADBEEF A D"];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 1,
+            num_relocs: 0,
+        };
+        let result = load_symbols(&content, &sizes).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].value, 0xDEADBEEF);
+        assert!(matches!(result[0].segnum, SegNum::Segment(0xA)));
+    }
+
+    #[test]
+    fn load_symbols_extra_whitespace_ok() {
+        let content = vec!["LINK", "0 1 0", "  foo   1234   1   D  "];
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 1,
+            num_relocs: 0,
+        };
+        let result = load_symbols(&content, &sizes).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "foo");
+        assert_eq!(result[0].value, 0x1234);
+        assert!(matches!(result[0].segnum, SegNum::Segment(1)));
+        assert!(matches!(result[0].symtype, SymbolType::Defined));
+    }
+
+    #[test]
+    fn load_symbols_with_segments_offset_ok() {
+        let content = vec![
+            "LINK",
+            "2 2 0",
+            ".text 1000 2500 RP",
+            ".data 4000 C00 RWP",
+            "foo 1234 1 D",
+            "bar 5678 2 U",
+        ];
+        let sizes = Sizes {
+            num_segments: 2,
+            num_symbols: 2,
+            num_relocs: 0,
+        };
+        let result = load_symbols(&content, &sizes).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "foo");
+        assert_eq!(result[1].name, "bar");
     }
 }

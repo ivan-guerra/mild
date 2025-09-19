@@ -1,7 +1,10 @@
 LINK
-3 0 0
+3 3 0
 .text 1000 2500 RP
 .data 4000 C00  RWP
 .bss  5000 1900 RW
+foo   0    1    D
+bar   0    2    U
+baz   0    0    U
 DEADBEEF
 
