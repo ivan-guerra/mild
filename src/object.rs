@@ -27,23 +27,23 @@ impl Display for Sizes {
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct SegmentFlags: u8 {
+    pub struct SegFlags: u8 {
         const READ = 0b00000001;
         const WRITE = 0b00000010;
         const PRESENT = 0b00000100;
     }
 }
 
-impl Display for SegmentFlags {
+impl Display for SegFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut flags = Vec::new();
-        if self.contains(SegmentFlags::READ) {
+        if self.contains(SegFlags::READ) {
             flags.push("R");
         }
-        if self.contains(SegmentFlags::WRITE) {
+        if self.contains(SegFlags::WRITE) {
             flags.push("W");
         }
-        if self.contains(SegmentFlags::PRESENT) {
+        if self.contains(SegFlags::PRESENT) {
             flags.push("P");
         }
         write!(f, "{}", flags.join(""))
@@ -55,7 +55,7 @@ struct Segment {
     name: String,
     address: u32,
     len: u32,
-    desc: SegmentFlags,
+    desc: SegFlags,
 }
 
 impl Display for Segment {
@@ -282,7 +282,7 @@ fn load_segments(contents: &[&str], num_segments: u32) -> anyhow::Result<Vec<Seg
         let desc_str = parts
             .next()
             .context(format!("Missing descriptor for segment {}", i))?;
-        let mut desc = SegmentFlags::empty();
+        let mut desc = SegFlags::empty();
         let mut seen = HashSet::new();
         for ch in desc_str.chars() {
             if seen.contains(&ch) {
@@ -294,9 +294,9 @@ fn load_segments(contents: &[&str], num_segments: u32) -> anyhow::Result<Vec<Seg
             seen.insert(ch);
 
             match ch {
-                'R' | 'r' => desc |= SegmentFlags::READ,
-                'W' | 'w' => desc |= SegmentFlags::WRITE,
-                'P' | 'p' => desc |= SegmentFlags::PRESENT,
+                'R' | 'r' => desc |= SegFlags::READ,
+                'W' | 'w' => desc |= SegFlags::WRITE,
+                'P' | 'p' => desc |= SegFlags::PRESENT,
                 _ => bail!(format!(
                     "Invalid descriptor character '{}' in segment {}",
                     ch, i
@@ -479,7 +479,7 @@ fn load_data(
         + sizes.num_relocs as usize;
 
     for (segnum, segment) in segments.iter().enumerate() {
-        if !segment.desc.contains(SegmentFlags::PRESENT) {
+        if !segment.desc.contains(SegFlags::PRESENT) {
             continue;
         }
         if data_idx >= contents.len() {
@@ -636,14 +636,14 @@ mod tests {
         assert_eq!(result[0].name, ".text");
         assert_eq!(result[0].address, 0x1000);
         assert_eq!(result[0].len, 0x2500);
-        assert_eq!(result[0].desc, SegmentFlags::READ | SegmentFlags::PRESENT);
+        assert_eq!(result[0].desc, SegFlags::READ | SegFlags::PRESENT);
 
         assert_eq!(result[1].name, ".data");
         assert_eq!(result[1].address, 0x4000);
         assert_eq!(result[1].len, 0xC00);
         assert_eq!(
             result[1].desc,
-            SegmentFlags::READ | SegmentFlags::WRITE | SegmentFlags::PRESENT
+            SegFlags::READ | SegFlags::WRITE | SegFlags::PRESENT
         );
     }
 
@@ -728,7 +728,7 @@ mod tests {
         assert_eq!(result[0].name, ".text");
         assert_eq!(result[0].address, 0x1000);
         assert_eq!(result[0].len, 0x2500);
-        assert_eq!(result[0].desc, SegmentFlags::READ | SegmentFlags::PRESENT);
+        assert_eq!(result[0].desc, SegFlags::READ | SegFlags::PRESENT);
     }
 
     #[test]
@@ -1122,13 +1122,13 @@ mod tests {
                 name: ".text".to_string(),
                 address: 0x1000,
                 len: 0x2500,
-                desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+                desc: SegFlags::READ | SegFlags::PRESENT,
             },
             Segment {
                 name: ".data".to_string(),
                 address: 0x4000,
                 len: 0xC00,
-                desc: SegmentFlags::READ | SegmentFlags::WRITE | SegmentFlags::PRESENT,
+                desc: SegFlags::READ | SegFlags::WRITE | SegFlags::PRESENT,
             },
         ];
         let sizes = Sizes {
@@ -1153,13 +1153,13 @@ mod tests {
                 name: ".text".to_string(),
                 address: 0x1000,
                 len: 0x2500,
-                desc: SegmentFlags::READ | SegmentFlags::WRITE,
+                desc: SegFlags::READ | SegFlags::WRITE,
             },
             Segment {
                 name: ".data".to_string(),
                 address: 0x4000,
                 len: 0xC00,
-                desc: SegmentFlags::READ | SegmentFlags::WRITE,
+                desc: SegFlags::READ | SegFlags::WRITE,
             },
         ];
         let sizes = Sizes {
@@ -1188,19 +1188,19 @@ mod tests {
                 name: ".text".to_string(),
                 address: 0x1000,
                 len: 0x2500,
-                desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+                desc: SegFlags::READ | SegFlags::PRESENT,
             },
             Segment {
                 name: ".data".to_string(),
                 address: 0x4000,
                 len: 0xC00,
-                desc: SegmentFlags::READ | SegmentFlags::WRITE,
+                desc: SegFlags::READ | SegFlags::WRITE,
             },
             Segment {
                 name: ".bss".to_string(),
                 address: 0x5000,
                 len: 0x1900,
-                desc: SegmentFlags::READ | SegmentFlags::WRITE | SegmentFlags::PRESENT,
+                desc: SegFlags::READ | SegFlags::WRITE | SegFlags::PRESENT,
             },
         ];
         let sizes = Sizes {
@@ -1224,7 +1224,7 @@ mod tests {
             name: ".text".to_string(),
             address: 0x1000,
             len: 0x0,
-            desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+            desc: SegFlags::READ | SegFlags::PRESENT,
         }];
         let sizes = Sizes {
             num_segments: 1,
@@ -1241,7 +1241,7 @@ mod tests {
             name: ".text".to_string(),
             address: 0x1000,
             len: 0x1,
-            desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+            desc: SegFlags::READ | SegFlags::PRESENT,
         }];
         let sizes = Sizes {
             num_segments: 1,
@@ -1262,7 +1262,7 @@ mod tests {
             name: ".text".to_string(),
             address: 0x1000,
             len: 0x2500,
-            desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+            desc: SegFlags::READ | SegFlags::PRESENT,
         }];
         let sizes = Sizes {
             num_segments: 1,
@@ -1279,7 +1279,7 @@ mod tests {
             name: ".text".to_string(),
             address: 0x1000,
             len: 0x2500,
-            desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+            desc: SegFlags::READ | SegFlags::PRESENT,
         }];
         let sizes = Sizes {
             num_segments: 1,
@@ -1296,7 +1296,7 @@ mod tests {
             name: ".text".to_string(),
             address: 0x1000,
             len: 0x2500,
-            desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+            desc: SegFlags::READ | SegFlags::PRESENT,
         }];
         let sizes = Sizes {
             num_segments: 1,
