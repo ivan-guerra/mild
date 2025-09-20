@@ -247,10 +247,10 @@ fn load_sizes(contents: &[&str]) -> anyhow::Result<Sizes> {
     })
 }
 
-fn load_segments(contents: &[&str], num_segments: usize) -> anyhow::Result<Vec<Segment>> {
+fn load_segments(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Segment>> {
     let mut segments = Vec::new();
 
-    for i in 0..num_segments {
+    for i in 0..sizes.num_segments {
         let line_index = HEADER_SIZE + i; // Segments start from the third line
         if line_index >= contents.len() {
             bail!("Invalid object file: insufficient lines for segments");
@@ -510,7 +510,7 @@ pub fn load_object(file: &Path) -> anyhow::Result<Object> {
 
     load_magic(&contents)?;
     let sizes = load_sizes(&contents)?;
-    let segments = load_segments(&contents, sizes.num_segments)?;
+    let segments = load_segments(&contents, &sizes)?;
     let symtab = load_symbols(&contents, &sizes)?;
     let relocs = load_relocations(&contents, &sizes)?;
     let data = load_data(&contents, &segments, &sizes)?;
@@ -627,7 +627,12 @@ mod tests {
     #[test]
     fn load_segments_valid_segments_ok() {
         let content = vec!["LINK", "2 0 0", ".text 1000 2500 RP", ".data 4000 C00 RWP"];
-        let result = load_segments(&content, 2).unwrap();
+        let sizes = Sizes {
+            num_segments: 2,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        let result = load_segments(&content, &sizes).unwrap();
 
         assert_eq!(result.len(), 2);
 
@@ -648,80 +653,145 @@ mod tests {
     #[test]
     fn load_segments_zero_segments_ok() {
         let content = vec!["LINK", "0 0 0"];
-        let result = load_segments(&content, 0).unwrap();
+        let sizes = Sizes {
+            num_segments: 0,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        let result = load_segments(&content, &sizes).unwrap();
         assert_eq!(result.len(), 0);
     }
 
     #[test]
     fn load_segments_insufficient_lines_error() {
         let content = vec!["LINK", "2 0 0", ".text 1000 2500 RP"];
-        assert!(load_segments(&content, 2).is_err());
+        let sizes = Sizes {
+            num_segments: 2,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_err());
     }
 
     #[test]
     fn load_segments_missing_name_error() {
         let content = vec!["LINK", "1 0 0", ""];
-        assert!(load_segments(&content, 1).is_err());
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_err());
     }
 
     #[test]
     fn load_segments_missing_address_error() {
         let content = vec!["LINK", "1 0 0", ".text"];
-        assert!(load_segments(&content, 1).is_err());
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_err());
     }
 
     #[test]
     fn load_segments_missing_length_error() {
         let content = vec!["LINK", "1 0 0", ".text 1000"];
-        assert!(load_segments(&content, 1).is_err());
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_err());
     }
 
     #[test]
     fn load_segments_missing_descriptor_error() {
         let content = vec!["LINK", "1 0 0", ".text 1000 2500"];
-        assert!(load_segments(&content, 1).is_err());
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_err());
     }
 
     #[test]
     fn load_segments_invalid_address_format_error() {
         let content = vec!["LINK", "1 0 0", ".text INVALID 2500 RP"];
-        assert!(load_segments(&content, 1).is_err());
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_err());
     }
 
     #[test]
     fn load_segments_invalid_length_format_error() {
         let content = vec!["LINK", "1 0 0", ".text 1000 INVALID RP"];
-        assert!(load_segments(&content, 1).is_err());
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_err());
     }
 
     #[test]
     fn load_segments_invalid_descriptor_character_error() {
         let content = vec!["LINK", "1 0 0", ".text 1000 2500 RXP"];
-        assert!(load_segments(&content, 1).is_err());
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_err());
     }
 
     #[test]
     fn load_segments_empty_descriptor_error() {
         let content = vec!["LINK", "1 0 0", ".text 1000 2500 "];
-        assert!(load_segments(&content, 1).is_err());
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_err());
     }
 
     #[test]
     fn load_segments_duplicate_flags_err() {
         let content = vec!["LINK", "1 0 0", ".text 1000 2500 RRP"];
-        assert!(load_segments(&content, 1).is_err());
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_err());
     }
 
     #[test]
     fn load_segments_mixed_case_descriptor_ok() {
         let content = vec!["LINK", "1 0 0", ".text 1000 2500 rWp"];
-        assert!(load_segments(&content, 1).is_ok());
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_segments(&content, &sizes).is_ok());
     }
 
     #[test]
     fn load_segments_extra_whitespace_ok() {
         let content = vec!["LINK", "1 0 0", "  .text   1000   2500   RP  "];
-        let result = load_segments(&content, 1).unwrap();
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        let result = load_segments(&content, &sizes).unwrap();
 
         assert_eq!(result[0].name, ".text");
         assert_eq!(result[0].address, 0x1000);
