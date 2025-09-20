@@ -178,37 +178,28 @@ impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Object {{")?;
         writeln!(f, "  {},", self.sizes)?;
-        if !self.segments.is_empty() {
-            writeln!(f, "  segments: [")?;
-            for segment in &self.segments {
-                writeln!(f, "    {},", segment)?;
-            }
-            writeln!(f, "  ]")?;
-        }
 
-        if !self.symtab.is_empty() {
-            writeln!(f, "  symtab: [")?;
-            for symbol in &self.symtab {
-                writeln!(f, "    {},", symbol)?;
+        fn print_section<T: Display>(
+            section: &Vec<T>,
+            name: &str,
+            f: &mut std::fmt::Formatter<'_>,
+        ) -> std::fmt::Result {
+            if !section.is_empty() {
+                writeln!(f, "  {}: [", name)?;
+                for s in section {
+                    writeln!(f, "    {},", s)?;
+                }
+                writeln!(f, "  ]")?;
+            } else {
+                writeln!(f, "  {}: []", name)?;
             }
-            writeln!(f, "  ]")?;
+            Ok(())
         }
+        print_section(&self.segments, "segments", f)?;
+        print_section(&self.symtab, "symtab", f)?;
+        print_section(&self.relocs, "relocs", f)?;
+        print_section(&self.data, "data", f)?;
 
-        if !self.relocs.is_empty() {
-            writeln!(f, "  relocs: [")?;
-            for reloc in &self.relocs {
-                writeln!(f, "    {},", reloc)?;
-            }
-            writeln!(f, "  ]")?;
-        }
-
-        if !self.data.is_empty() {
-            writeln!(f, "  data: [")?;
-            for data in &self.data {
-                writeln!(f, "    {},", data)?;
-            }
-            writeln!(f, "  ]")?;
-        }
         write!(f, "}}")
     }
 }
