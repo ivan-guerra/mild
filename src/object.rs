@@ -10,9 +10,9 @@ const HEADER_SIZE: usize = 2;
 
 #[derive(Debug)]
 struct Sizes {
-    num_segments: u32,
-    num_symbols: u32,
-    num_relocs: u32,
+    num_segments: usize,
+    num_symbols: usize,
+    num_relocs: usize,
 }
 
 impl Display for Sizes {
@@ -231,12 +231,13 @@ fn load_sizes(contents: &[&str]) -> anyhow::Result<Sizes> {
 
     let mut parts = contents[HEADER_SIZE - 1].split_whitespace();
 
-    let num_segments = u32::from_str_radix(parts.next().context("Missing number of segments")?, 16)
-        .context("Failed to parse number of segments")?;
-    let num_symbols = u32::from_str_radix(parts.next().context("Missing number of symbols")?, 16)
+    let num_segments =
+        usize::from_str_radix(parts.next().context("Missing number of segments")?, 16)
+            .context("Failed to parse number of segments")?;
+    let num_symbols = usize::from_str_radix(parts.next().context("Missing number of symbols")?, 16)
         .context("Failed to parse number of symbols")?;
     let num_relocs =
-        u32::from_str_radix(parts.next().context("Missing number of relocations")?, 16)
+        usize::from_str_radix(parts.next().context("Missing number of relocations")?, 16)
             .context("Failed to parse number of relocations")?;
 
     Ok(Sizes {
@@ -246,10 +247,10 @@ fn load_sizes(contents: &[&str]) -> anyhow::Result<Sizes> {
     })
 }
 
-fn load_segments(contents: &[&str], num_segments: u32) -> anyhow::Result<Vec<Segment>> {
+fn load_segments(contents: &[&str], num_segments: usize) -> anyhow::Result<Vec<Segment>> {
     let mut segments = Vec::new();
 
-    for i in 0..num_segments as usize {
+    for i in 0..num_segments {
         let line_index = HEADER_SIZE + i; // Segments start from the third line
         if line_index >= contents.len() {
             bail!("Invalid object file: insufficient lines for segments");
@@ -321,9 +322,9 @@ fn load_segments(contents: &[&str], num_segments: u32) -> anyhow::Result<Vec<Seg
 
 fn load_symbols(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Symbol>> {
     let mut symbols = Vec::new();
-    let start_index = HEADER_SIZE + sizes.num_segments as usize; // Symbols start after segments
+    let start_index = HEADER_SIZE + sizes.num_segments;
 
-    for i in 0..sizes.num_symbols as usize {
+    for i in 0..sizes.num_symbols {
         let line_index = start_index + i;
         if line_index >= contents.len() {
             bail!("Invalid object file: insufficient lines for symbols");
@@ -383,9 +384,9 @@ fn load_symbols(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Symbol>>
 
 fn load_relocations(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Relocation>> {
     let mut relocations = Vec::new();
-    let start_idx = HEADER_SIZE + sizes.num_segments as usize + sizes.num_symbols as usize;
+    let start_idx = HEADER_SIZE + sizes.num_segments + sizes.num_symbols;
 
-    for i in 0..sizes.num_relocs as usize {
+    for i in 0..sizes.num_relocs {
         let line_index = start_idx + i;
         if line_index >= contents.len() {
             bail!("Invalid object file: insufficient lines for relocations");
@@ -473,10 +474,7 @@ fn load_data(
     sizes: &Sizes,
 ) -> anyhow::Result<Vec<SegData>> {
     let mut seg_data = Vec::new();
-    let mut data_idx = HEADER_SIZE
-        + sizes.num_segments as usize
-        + sizes.num_symbols as usize
-        + sizes.num_relocs as usize;
+    let mut data_idx = HEADER_SIZE + sizes.num_segments + sizes.num_symbols + sizes.num_relocs;
 
     for (segnum, segment) in segments.iter().enumerate() {
         if !segment.desc.contains(SegFlags::PRESENT) {
