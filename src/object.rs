@@ -54,7 +54,7 @@ impl Display for SegFlags {
 struct Segment {
     name: String,
     address: u32,
-    len: u32,
+    len: usize,
     desc: SegFlags,
 }
 
@@ -70,7 +70,7 @@ impl Display for Segment {
 
 #[derive(Debug)]
 enum SegNum {
-    Segment(u8),
+    Segment(usize),
     AbsOrUndef,
 }
 
@@ -134,8 +134,8 @@ impl Display for RelocationType {
 #[derive(Debug)]
 struct Relocation {
     location: u32,
-    seg: SegNum,
-    relref: u8,
+    segnum: SegNum,
+    relref: usize,
     reltype: RelocationType,
 }
 
@@ -144,20 +144,20 @@ impl Display for Relocation {
         write!(
             f,
             "Relocation {{ location: {:X}, seg: {}, relref: {:X}, reltype: {} }}",
-            self.location, self.seg, self.relref, self.reltype
+            self.location, self.segnum, self.relref, self.reltype
         )
     }
 }
 
 #[derive(Debug)]
 struct SegData {
-    seg: SegNum,
+    segnum: SegNum,
     data: Vec<u8>,
 }
 
 impl Display for SegData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Data {{ seg: {}, data: [", self.seg)?;
+        write!(f, "Data {{ seg: {}, data: [", self.segnum)?;
         for byte in &self.data {
             write!(f, "{:02X} ", byte)?;
         }
@@ -213,7 +213,7 @@ impl Display for Object {
     }
 }
 
-fn load_magic(content: &[&str]) -> anyhow::Result<()> {
+fn has_valid_magic(content: &[&str]) -> anyhow::Result<()> {
     match content.first() {
         Some(&MILD_MAGIC) => Ok(()),
         Some(magic) => bail!(
@@ -272,7 +272,7 @@ fn load_segments(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Segment
         )
         .context(format!("Failed to parse address for segment {}", i))?;
 
-        let len = u32::from_str_radix(
+        let len = usize::from_str_radix(
             parts
                 .next()
                 .context(format!("Missing length for segment {}", i))?,
@@ -346,7 +346,7 @@ fn load_symbols(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Symbol>>
         )
         .context(format!("Failed to parse value for symbol {}", i))?;
 
-        let segnum = u8::from_str_radix(
+        let segnum = usize::from_str_radix(
             parts
                 .next()
                 .context(format!("Missing segment number for symbol {}", i))?,
@@ -403,7 +403,7 @@ fn load_relocations(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Relo
         )
         .context(format!("Failed to parse location for relocation {}", i))?;
 
-        let segnum = u8::from_str_radix(
+        let segnum = usize::from_str_radix(
             parts
                 .next()
                 .context(format!("Missing segment number for relocation {}", i))?,
@@ -415,7 +415,7 @@ fn load_relocations(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Relo
         ))?;
         let segnum = SegNum::Segment(segnum);
 
-        let relref = u8::from_str_radix(
+        let relref = usize::from_str_radix(
             parts
                 .next()
                 .context(format!("Missing reference for relocation {}", i))?,
@@ -436,7 +436,7 @@ fn load_relocations(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Relo
         };
         relocations.push(Relocation {
             location,
-            seg: segnum,
+            segnum,
             relref,
             reltype,
         });
@@ -494,7 +494,7 @@ fn load_data(
         }
 
         seg_data.push(SegData {
-            seg: SegNum::Segment((segnum + 1) as u8),
+            segnum: SegNum::Segment(segnum + 1),
             data: parse_byte_data(contents[data_idx], segnum + 1)?,
         });
 
@@ -504,16 +504,68 @@ fn load_data(
     Ok(seg_data)
 }
 
+fn has_valid_data_sizes(segments: &[Segment], segdata: &[SegData]) -> anyhow::Result<()> {
+    segdata.iter().try_for_each(|entry| {
+        if let SegNum::Segment(num) = entry.segnum {
+            let segment = &segments[num - 1];
+            if segment.len != entry.data.len() {
+                bail!(format!(
+                    "Data length mismatch for segment {}: expected {:X}, found {:X}",
+                    num,
+                    segment.len,
+                    entry.data.len()
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
+fn has_valid_sym_to_seg_mapping(segments: &[Segment], symtab: &[Symbol]) -> anyhow::Result<()> {
+    symtab.iter().try_for_each(|symbol| {
+        if let SegNum::Segment(num) = symbol.segnum {
+            let segnum = num - 1; // Convert to 0-based index
+            if segnum >= segments.len() {
+                bail!(format!(
+                    "Invalid segment number {} for symbol '{}'",
+                    num, symbol.name
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
+fn has_valid_reloc_seg_mapping(segments: &[Segment], relocs: &[Relocation]) -> anyhow::Result<()> {
+    relocs.iter().try_for_each(|reloc| {
+        if let SegNum::Segment(num) = reloc.segnum {
+            let segnum = num - 1; // Convert to 0-based index
+            if segnum >= segments.len() {
+                bail!(format!(
+                    "Invalid segment number {} for relocation at location {:X}",
+                    num, reloc.location
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
 pub fn load_object(file: &Path) -> anyhow::Result<Object> {
     let contents = fs::read_to_string(file).with_context(|| "Failed to read object file")?;
     let contents: Vec<&str> = contents.lines().collect();
 
-    load_magic(&contents)?;
+    has_valid_magic(&contents)?;
+
     let sizes = load_sizes(&contents)?;
     let segments = load_segments(&contents, &sizes)?;
     let symtab = load_symbols(&contents, &sizes)?;
     let relocs = load_relocations(&contents, &sizes)?;
     let data = load_data(&contents, &segments, &sizes)?;
+
+    has_valid_data_sizes(&segments, &data)?;
+    has_valid_sym_to_seg_mapping(&segments, &symtab)?;
+    has_valid_reloc_seg_mapping(&segments, &relocs)?;
 
     Ok(Object {
         sizes,
@@ -531,31 +583,31 @@ mod tests {
     #[test]
     fn load_magic_valid_magic_ok() {
         let content = vec!["LINK", "1 2 3"];
-        assert!(load_magic(&content).is_ok());
+        assert!(has_valid_magic(&content).is_ok());
     }
 
     #[test]
     fn load_magic_invalid_magic_error() {
         let content = vec!["INVALID", "1 2 3"];
-        assert!(load_magic(&content).is_err());
+        assert!(has_valid_magic(&content).is_err());
     }
 
     #[test]
     fn load_magic_empty_content_error() {
         let content = vec![];
-        assert!(load_magic(&content).is_err());
+        assert!(has_valid_magic(&content).is_err());
     }
 
     #[test]
     fn load_magic_empty_string_error() {
         let content = vec![""];
-        assert!(load_magic(&content).is_err());
+        assert!(has_valid_magic(&content).is_err());
     }
 
     #[test]
     fn load_magic_case_sensitive_error() {
         let content = vec!["link", "1 2 3"];
-        assert!(load_magic(&content).is_err());
+        assert!(has_valid_magic(&content).is_err());
     }
 
     #[test]
@@ -1008,17 +1060,17 @@ mod tests {
         assert_eq!(result.len(), 3);
 
         assert_eq!(result[0].location, 0x1100);
-        assert!(matches!(result[0].seg, SegNum::Segment(1)));
+        assert!(matches!(result[0].segnum, SegNum::Segment(1)));
         assert_eq!(result[0].relref, 1);
         assert!(matches!(result[0].reltype, RelocationType::Absolute));
 
         assert_eq!(result[1].location, 0x4100);
-        assert!(matches!(result[1].seg, SegNum::Segment(2)));
+        assert!(matches!(result[1].segnum, SegNum::Segment(2)));
         assert_eq!(result[1].relref, 2);
         assert!(matches!(result[1].reltype, RelocationType::Relative));
 
         assert_eq!(result[2].location, 0x8000);
-        assert!(matches!(result[2].seg, SegNum::Segment(0)));
+        assert!(matches!(result[2].segnum, SegNum::Segment(0)));
         assert_eq!(result[2].relref, 3);
         assert!(matches!(result[2].reltype, RelocationType::Absolute));
     }
@@ -1146,7 +1198,7 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].location, 0x1100);
-        assert!(matches!(result[0].seg, SegNum::Segment(1)));
+        assert!(matches!(result[0].segnum, SegNum::Segment(1)));
         assert_eq!(result[0].relref, 1);
         assert!(matches!(result[0].reltype, RelocationType::Absolute));
     }
@@ -1207,9 +1259,9 @@ mod tests {
         let result = load_data(&content, &segments, &sizes).unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(matches!(result[0].seg, SegNum::Segment(1)));
+        assert!(matches!(result[0].segnum, SegNum::Segment(1)));
         assert_eq!(result[0].data, vec![0xDE, 0xAD, 0xBE, 0xEF]);
-        assert!(matches!(result[1].seg, SegNum::Segment(2)));
+        assert!(matches!(result[1].segnum, SegNum::Segment(2)));
         assert_eq!(result[1].data, vec![0xCA, 0xFE, 0xBA, 0xBE]);
     }
 
@@ -1279,9 +1331,9 @@ mod tests {
         let result = load_data(&content, &segments, &sizes).unwrap();
 
         assert_eq!(result.len(), 2);
-        assert!(matches!(result[0].seg, SegNum::Segment(1)));
+        assert!(matches!(result[0].segnum, SegNum::Segment(1)));
         assert_eq!(result[0].data, vec![0xDE, 0xAD, 0xBE, 0xEF]);
-        assert!(matches!(result[1].seg, SegNum::Segment(3)));
+        assert!(matches!(result[1].segnum, SegNum::Segment(3)));
         assert_eq!(result[1].data, vec![0xCA, 0xFE, 0xBA, 0xBE]);
     }
 
@@ -1319,7 +1371,7 @@ mod tests {
         let result = load_data(&content, &segments, &sizes).unwrap();
 
         assert_eq!(result.len(), 1);
-        assert!(matches!(result[0].seg, SegNum::Segment(1)));
+        assert!(matches!(result[0].segnum, SegNum::Segment(1)));
         assert_eq!(result[0].data, vec![0xFF]);
     }
 
