@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 const MILD_MAGIC: &str = "LINK";
+const HEADER_SIZE: usize = 2;
 
 #[derive(Debug)]
 struct Sizes {
@@ -224,11 +225,11 @@ fn load_magic(content: &[&str]) -> anyhow::Result<()> {
 }
 
 fn load_sizes(contents: &[&str]) -> anyhow::Result<Sizes> {
-    if contents.len() < 2 {
+    if contents.len() < HEADER_SIZE {
         bail!("Invalid object file: insufficient lines for sizes");
     }
 
-    let mut parts = contents[1].split_whitespace();
+    let mut parts = contents[HEADER_SIZE - 1].split_whitespace();
 
     let num_segments = u32::from_str_radix(parts.next().context("Missing number of segments")?, 16)
         .context("Failed to parse number of segments")?;
@@ -249,7 +250,7 @@ fn load_segments(contents: &[&str], num_segments: u32) -> anyhow::Result<Vec<Seg
     let mut segments = Vec::new();
 
     for i in 0..num_segments as usize {
-        let line_index = 2 + i; // Segments start from the third line
+        let line_index = HEADER_SIZE + i; // Segments start from the third line
         if line_index >= contents.len() {
             bail!("Invalid object file: insufficient lines for segments");
         }
@@ -320,7 +321,7 @@ fn load_segments(contents: &[&str], num_segments: u32) -> anyhow::Result<Vec<Seg
 
 fn load_symbols(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Symbol>> {
     let mut symbols = Vec::new();
-    let start_index = 2 + sizes.num_segments as usize; // Symbols start after segments
+    let start_index = HEADER_SIZE + sizes.num_segments as usize; // Symbols start after segments
 
     for i in 0..sizes.num_symbols as usize {
         let line_index = start_index + i;
@@ -382,7 +383,7 @@ fn load_symbols(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Symbol>>
 
 fn load_relocations(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Relocation>> {
     let mut relocations = Vec::new();
-    let start_idx = 2 + sizes.num_segments as usize + sizes.num_symbols as usize;
+    let start_idx = HEADER_SIZE + sizes.num_segments as usize + sizes.num_symbols as usize;
 
     for i in 0..sizes.num_relocs as usize {
         let line_index = start_idx + i;
@@ -472,8 +473,10 @@ fn load_data(
     sizes: &Sizes,
 ) -> anyhow::Result<Vec<SegData>> {
     let mut seg_data = Vec::new();
-    let mut data_idx =
-        2 + sizes.num_segments as usize + sizes.num_symbols as usize + sizes.num_relocs as usize;
+    let mut data_idx = HEADER_SIZE
+        + sizes.num_segments as usize
+        + sizes.num_symbols as usize
+        + sizes.num_relocs as usize;
 
     for (segnum, segment) in segments.iter().enumerate() {
         if !segment.desc.contains(SegmentFlags::PRESENT) {
