@@ -149,11 +149,28 @@ impl Display for Relocation {
 }
 
 #[derive(Debug)]
+struct SegData {
+    seg: SegNum,
+    data: Vec<u8>,
+}
+
+impl Display for SegData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Data {{ seg: {}, data: [", self.seg)?;
+        for byte in &self.data {
+            write!(f, "{:02X} ", byte)?;
+        }
+        write!(f, "] }}")
+    }
+}
+
+#[derive(Debug)]
 pub struct Object {
     sizes: Sizes,
     segments: Vec<Segment>,
     symtab: Vec<Symbol>,
     relocs: Vec<Relocation>,
+    data: Vec<SegData>,
 }
 
 impl Display for Object {
@@ -180,6 +197,14 @@ impl Display for Object {
             writeln!(f, "  relocs: [")?;
             for reloc in &self.relocs {
                 writeln!(f, "    {},", reloc)?;
+            }
+            writeln!(f, "  ]")?;
+        }
+
+        if !self.data.is_empty() {
+            writeln!(f, "  data: [")?;
+            for data in &self.data {
+                writeln!(f, "    {},", data)?;
             }
             writeln!(f, "  ]")?;
         }
@@ -418,6 +443,66 @@ fn load_relocations(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Relo
     Ok(relocations)
 }
 
+fn parse_byte_data(hex_str: &str, segnum: usize) -> anyhow::Result<Vec<u8>> {
+    let mut data = Vec::new();
+    for pair in hex_str.as_bytes().chunks(2) {
+        if pair.len() != 2 {
+            bail!(format!(
+                "Invalid data length {} in segment {}: must be even number of hex digits",
+                hex_str.len(),
+                segnum
+            ));
+        }
+        let hex_str = std::str::from_utf8(pair).context(format!(
+            "Failed to convert segment {} data from utf8 to str",
+            segnum
+        ))?;
+        let byte = u8::from_str_radix(hex_str, 16).with_context(|| {
+            format!("Failed to parse segment {} data byte '{}'", segnum, hex_str)
+        })?;
+        data.push(byte);
+    }
+
+    Ok(data)
+}
+
+fn load_data(
+    contents: &[&str],
+    segments: &[Segment],
+    sizes: &Sizes,
+) -> anyhow::Result<Vec<SegData>> {
+    let mut seg_data = Vec::new();
+    let mut data_idx =
+        2 + sizes.num_segments as usize + sizes.num_symbols as usize + sizes.num_relocs as usize;
+
+    for (segnum, segment) in segments.iter().enumerate() {
+        if !segment.desc.contains(SegmentFlags::PRESENT) {
+            continue;
+        }
+        if data_idx >= contents.len() {
+            bail!(format!(
+                "Invalid object file: missing segment {} data",
+                segnum + 1
+            ));
+        }
+        if contents[data_idx].is_empty() {
+            bail!(format!(
+                "Invalid object file: empty data for segment {}",
+                segnum + 1
+            ));
+        }
+
+        seg_data.push(SegData {
+            seg: SegNum::Segment((segnum + 1) as u8),
+            data: parse_byte_data(contents[data_idx], segnum + 1)?,
+        });
+
+        data_idx += 1;
+    }
+
+    Ok(seg_data)
+}
+
 pub fn load_object(file: &Path) -> anyhow::Result<Object> {
     let contents = fs::read_to_string(file).with_context(|| "Failed to read object file")?;
     let contents: Vec<&str> = contents.lines().collect();
@@ -427,12 +512,14 @@ pub fn load_object(file: &Path) -> anyhow::Result<Object> {
     let segments = load_segments(&contents, sizes.num_segments)?;
     let symtab = load_symbols(&contents, &sizes)?;
     let relocs = load_relocations(&contents, &sizes)?;
+    let data = load_data(&contents, &segments, &sizes)?;
 
     Ok(Object {
         sizes,
         segments,
         symtab,
         relocs,
+        data,
     })
 }
 
@@ -1015,5 +1102,204 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].location, 0x1100);
         assert_eq!(result[1].location, 0x4100);
+    }
+
+    #[test]
+    fn load_data_valid_data_ok() {
+        let content = vec![
+            "LINK",
+            "2 0 0",
+            ".text 1000 2500 RP",
+            ".data 4000 C00 RWP",
+            "DEADBEEF",
+            "CAFEBABE",
+        ];
+        let segments = vec![
+            Segment {
+                name: ".text".to_string(),
+                address: 0x1000,
+                len: 0x2500,
+                desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+            },
+            Segment {
+                name: ".data".to_string(),
+                address: 0x4000,
+                len: 0xC00,
+                desc: SegmentFlags::READ | SegmentFlags::WRITE | SegmentFlags::PRESENT,
+            },
+        ];
+        let sizes = Sizes {
+            num_segments: 2,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        let result = load_data(&content, &segments, &sizes).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(matches!(result[0].seg, SegNum::Segment(1)));
+        assert_eq!(result[0].data, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(matches!(result[1].seg, SegNum::Segment(2)));
+        assert_eq!(result[1].data, vec![0xCA, 0xFE, 0xBA, 0xBE]);
+    }
+
+    #[test]
+    fn load_data_no_present_segments_ok() {
+        let content = vec!["LINK", "2 0 0", ".text 1000 2500 RW", ".data 4000 C00 RW"];
+        let segments = vec![
+            Segment {
+                name: ".text".to_string(),
+                address: 0x1000,
+                len: 0x2500,
+                desc: SegmentFlags::READ | SegmentFlags::WRITE,
+            },
+            Segment {
+                name: ".data".to_string(),
+                address: 0x4000,
+                len: 0xC00,
+                desc: SegmentFlags::READ | SegmentFlags::WRITE,
+            },
+        ];
+        let sizes = Sizes {
+            num_segments: 2,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        let result = load_data(&content, &segments, &sizes).unwrap();
+
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn load_data_mixed_present_segments_ok() {
+        let content = vec![
+            "LINK",
+            "3 0 0",
+            ".text 1000 2500 RP",
+            ".data 4000 C00 RW",
+            ".bss 5000 1900 RWP",
+            "DEADBEEF",
+            "CAFEBABE",
+        ];
+        let segments = vec![
+            Segment {
+                name: ".text".to_string(),
+                address: 0x1000,
+                len: 0x2500,
+                desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+            },
+            Segment {
+                name: ".data".to_string(),
+                address: 0x4000,
+                len: 0xC00,
+                desc: SegmentFlags::READ | SegmentFlags::WRITE,
+            },
+            Segment {
+                name: ".bss".to_string(),
+                address: 0x5000,
+                len: 0x1900,
+                desc: SegmentFlags::READ | SegmentFlags::WRITE | SegmentFlags::PRESENT,
+            },
+        ];
+        let sizes = Sizes {
+            num_segments: 3,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        let result = load_data(&content, &segments, &sizes).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(matches!(result[0].seg, SegNum::Segment(1)));
+        assert_eq!(result[0].data, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert!(matches!(result[1].seg, SegNum::Segment(3)));
+        assert_eq!(result[1].data, vec![0xCA, 0xFE, 0xBA, 0xBE]);
+    }
+
+    #[test]
+    fn load_data_empty_data_err() {
+        let content = vec!["LINK", "1 0 0", ".text 1000 0 RP", ""];
+        let segments = vec![Segment {
+            name: ".text".to_string(),
+            address: 0x1000,
+            len: 0x0,
+            desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+        }];
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_data(&content, &segments, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_data_single_byte_ok() {
+        let content = vec!["LINK", "1 0 0", ".text 1 1000 RP", "FF"];
+        let segments = vec![Segment {
+            name: ".text".to_string(),
+            address: 0x1000,
+            len: 0x1,
+            desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+        }];
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        let result = load_data(&content, &segments, &sizes).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert!(matches!(result[0].seg, SegNum::Segment(1)));
+        assert_eq!(result[0].data, vec![0xFF]);
+    }
+
+    #[test]
+    fn load_data_insufficient_lines_error() {
+        let content = vec!["LINK", "1 0 0", ".text 1000 2500 RP"];
+        let segments = vec![Segment {
+            name: ".text".to_string(),
+            address: 0x1000,
+            len: 0x2500,
+            desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+        }];
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_data(&content, &segments, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_data_invalid_hex_length_error() {
+        let content = vec!["LINK", "1 0 0", ".text 1000 2500 RP", "DEADBEE"];
+        let segments = vec![Segment {
+            name: ".text".to_string(),
+            address: 0x1000,
+            len: 0x2500,
+            desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+        }];
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_data(&content, &segments, &sizes).is_err());
+    }
+
+    #[test]
+    fn load_data_invalid_hex_character_error() {
+        let content = vec!["LINK", "1 0 0", ".text 1000 2500 RP", "DEADBEZF"];
+        let segments = vec![Segment {
+            name: ".text".to_string(),
+            address: 0x1000,
+            len: 0x2500,
+            desc: SegmentFlags::READ | SegmentFlags::PRESENT,
+        }];
+        let sizes = Sizes {
+            num_segments: 1,
+            num_symbols: 0,
+            num_relocs: 0,
+        };
+        assert!(load_data(&content, &segments, &sizes).is_err());
     }
 }
