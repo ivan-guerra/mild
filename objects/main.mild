@@ -1,5 +1,7 @@
 LINK
-3 0 0
+3 2 0
 .text 1000 1017 R
 .data 4000 320  RW
 .bss  A000 50   RW
+foo   DEAD 1    U
+bar   F00D 1    U
