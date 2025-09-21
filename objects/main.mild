@@ -1,0 +1,5 @@
+LINK
+3 0 0
+.text 1000 1017 R
+.data 4000 320  RW
+.bss  A000 50   RW
