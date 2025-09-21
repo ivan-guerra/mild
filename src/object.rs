@@ -8,11 +8,11 @@ use std::path::Path;
 const MILD_MAGIC: &str = "LINK";
 const HEADER_SIZE: usize = 2;
 
-#[derive(Debug)]
-struct Sizes {
-    num_segments: usize,
-    num_symbols: usize,
-    num_relocs: usize,
+#[derive(Debug, Default)]
+pub struct Sizes {
+    pub num_segments: usize,
+    pub num_symbols: usize,
+    pub num_relocs: usize,
 }
 
 impl Display for Sizes {
@@ -26,7 +26,7 @@ impl Display for Sizes {
 }
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct SegFlags: u8 {
         const READ = 0b00000001;
         const WRITE = 0b00000010;
@@ -50,12 +50,12 @@ impl Display for SegFlags {
     }
 }
 
-#[derive(Debug)]
-struct Segment {
-    name: String,
-    address: u32,
-    len: usize,
-    desc: SegFlags,
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct Segment {
+    pub name: String,
+    pub address: u32,
+    pub len: usize,
+    pub desc: SegFlags,
 }
 
 impl Display for Segment {
@@ -69,7 +69,7 @@ impl Display for Segment {
 }
 
 #[derive(Debug)]
-enum SegNum {
+pub enum SegNum {
     Segment(usize),
     AbsOrUndef,
 }
@@ -84,7 +84,7 @@ impl Display for SegNum {
 }
 
 #[derive(Debug)]
-enum SymbolType {
+pub enum SymbolType {
     Defined,
     Undefined,
 }
@@ -99,11 +99,11 @@ impl Display for SymbolType {
 }
 
 #[derive(Debug)]
-struct Symbol {
-    name: String,
-    value: u32,
-    segnum: SegNum,
-    symtype: SymbolType,
+pub struct Symbol {
+    pub name: String,
+    pub value: u32,
+    pub segnum: SegNum,
+    pub symtype: SymbolType,
 }
 
 impl Display for Symbol {
@@ -117,7 +117,7 @@ impl Display for Symbol {
 }
 
 #[derive(Debug)]
-enum RelocationType {
+pub enum RelocationType {
     Absolute,
     Relative,
 }
@@ -132,11 +132,11 @@ impl Display for RelocationType {
 }
 
 #[derive(Debug)]
-struct Relocation {
-    location: u32,
-    segnum: SegNum,
-    relref: usize,
-    reltype: RelocationType,
+pub struct Relocation {
+    pub location: u32,
+    pub segnum: SegNum,
+    pub relref: usize,
+    pub reltype: RelocationType,
 }
 
 impl Display for Relocation {
@@ -150,7 +150,7 @@ impl Display for Relocation {
 }
 
 #[derive(Debug)]
-struct SegData {
+pub struct SegData {
     segnum: SegNum,
     data: Vec<u8>,
 }
@@ -165,18 +165,20 @@ impl Display for SegData {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Object {
-    sizes: Sizes,
-    segments: Vec<Segment>,
-    symtab: Vec<Symbol>,
-    relocs: Vec<Relocation>,
-    data: Vec<SegData>,
+    pub filename: String,
+    pub sizes: Sizes,
+    pub segments: Vec<Segment>,
+    pub symtab: Vec<Symbol>,
+    pub relocs: Vec<Relocation>,
+    pub data: Vec<SegData>,
 }
 
 impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Object {{")?;
+        writeln!(f, "  filename: {},", self.filename)?;
         writeln!(f, "  {},", self.sizes)?;
 
         fn print_section<T: Display>(
@@ -548,6 +550,16 @@ pub fn load_object(file: &Path) -> anyhow::Result<Object> {
 
     has_valid_magic(&contents)?;
 
+    let filename = file
+        .file_name()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Failed to extract filename from path: {}",
+                file.to_string_lossy()
+            )
+        })?
+        .to_string_lossy()
+        .to_string();
     let sizes = load_sizes(&contents)?;
     let segments = load_segments(&contents, &sizes)?;
     let symtab = load_symbols(&contents, &sizes)?;
@@ -559,6 +571,7 @@ pub fn load_object(file: &Path) -> anyhow::Result<Object> {
     has_valid_reloc_seg_mapping(&segments, &relocs)?;
 
     Ok(Object {
+        filename,
         sizes,
         segments,
         symtab,
