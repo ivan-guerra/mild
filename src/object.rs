@@ -545,11 +545,6 @@ fn has_valid_reloc_seg_mapping(segments: &[Segment], relocs: &[Relocation]) -> a
 }
 
 pub fn load_object(file: &Path) -> anyhow::Result<Object> {
-    let contents = fs::read_to_string(file).with_context(|| "Failed to read object file")?;
-    let contents: Vec<&str> = contents.lines().collect();
-
-    has_valid_magic(&contents)?;
-
     let filename = file
         .file_name()
         .ok_or_else(|| {
@@ -560,15 +555,38 @@ pub fn load_object(file: &Path) -> anyhow::Result<Object> {
         })?
         .to_string_lossy()
         .to_string();
-    let sizes = load_sizes(&contents)?;
-    let segments = load_segments(&contents, &sizes)?;
-    let symtab = load_symbols(&contents, &sizes)?;
-    let relocs = load_relocations(&contents, &sizes)?;
-    let data = load_data(&contents, &segments, &sizes)?;
 
-    has_valid_data_sizes(&segments, &data)?;
-    has_valid_sym_to_seg_mapping(&segments, &symtab)?;
-    has_valid_reloc_seg_mapping(&segments, &relocs)?;
+    let contents = fs::read_to_string(file)
+        .with_context(|| format!("Failed to read object file '{}'", filename))?;
+    let contents: Vec<&str> = contents.lines().collect();
+
+    has_valid_magic(&contents).with_context(|| format!("Invalid magic in file '{}'", filename))?;
+
+    let sizes = load_sizes(&contents)
+        .with_context(|| format!("Failed to load sizes from file '{}'", filename))?;
+    let segments = load_segments(&contents, &sizes)
+        .with_context(|| format!("Failed to load segments from file '{}'", filename))?;
+    let symtab = load_symbols(&contents, &sizes)
+        .with_context(|| format!("Failed to load symbols from file '{}'", filename))?;
+    let relocs = load_relocations(&contents, &sizes)
+        .with_context(|| format!("Failed to load relocations from file '{}'", filename))?;
+    let data = load_data(&contents, &segments, &sizes)
+        .with_context(|| format!("Failed to load data from file '{}'", filename))?;
+
+    has_valid_data_sizes(&segments, &data)
+        .with_context(|| format!("Data size validation failed in file '{}'", filename))?;
+    has_valid_sym_to_seg_mapping(&segments, &symtab).with_context(|| {
+        format!(
+            "Symbol to segment mapping validation failed in file '{}'",
+            filename
+        )
+    })?;
+    has_valid_reloc_seg_mapping(&segments, &relocs).with_context(|| {
+        format!(
+            "Relocation to segment mapping validation failed in file '{}'",
+            filename
+        )
+    })?;
 
     Ok(Object {
         filename,
