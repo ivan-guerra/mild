@@ -3,10 +3,9 @@ use std::collections::HashMap;
 
 const ADDR_SIZE: usize = 4;
 const PAGE_SIZE: usize = 0x1000;
-const TEXT_SEGMENT: &str = ".text";
-const DATA_SEGMENT: &str = ".data";
 const BSS_SEGMENT: &str = ".bss";
-const BASE_TEXT_ADDR: usize = 0x1000;
+const BASE_ADDR: usize = 0x1000;
+const COMMON_BLOCK_OBJECT_NAME: &str = "common_blk";
 
 macro_rules! next_aligned {
     ($addr:expr, $align:expr) => {
@@ -73,35 +72,59 @@ fn create_common_blks(objects: &[Object]) -> Option<Segment> {
 }
 
 pub fn allocate(objects: &[Object]) -> anyhow::Result<Object> {
-    // Find all segments with the given name across all objects creating a vector of (object
-    // filename, segment) tuples
-    let find_segments = |segname: &str| -> Vec<(String, Segment)> {
-        objects
-            .iter()
-            .flat_map(|obj| {
-                obj.segments
-                    .iter()
-                    .filter(|seg| seg.name == segname)
-                    .map(|seg| (obj.filename.clone(), seg.clone()))
-            })
-            .collect()
-    };
-
-    let mut segmap: SegMap = HashMap::new();
-
-    let text_segments = find_segments(TEXT_SEGMENT);
-    let text_seg = merge_segments(&text_segments, TEXT_SEGMENT, BASE_TEXT_ADDR, &mut segmap);
-
-    let data_segments = find_segments(DATA_SEGMENT);
-    let data_start = next_aligned!(BASE_TEXT_ADDR + text_seg.len, PAGE_SIZE);
-    let data_seg = merge_segments(&data_segments, DATA_SEGMENT, data_start, &mut segmap);
-
-    let mut bss_segments = find_segments(BSS_SEGMENT);
-    let bss_start = next_aligned!(data_start + data_seg.len, ADDR_SIZE);
-    if let Some(bss_common_seg) = create_common_blks(objects) {
-        bss_segments.push(("common_blks.mild".to_string(), bss_common_seg));
+    // Group segments by their flags and names the mapping looks like:
+    // SegFlags -> (segname -> [(obj_filename, segment)])
+    let mut group_by_segflags: HashMap<SegFlags, HashMap<String, Vec<(ObjFilename, Segment)>>> =
+        HashMap::new();
+    for object in objects {
+        for segment in &object.segments {
+            group_by_segflags
+                .entry(segment.desc)
+                .or_default()
+                .entry(segment.name.clone())
+                .or_default()
+                .push((object.filename.clone(), segment.clone()));
+        }
     }
-    let bss_seg = merge_segments(&bss_segments, BSS_SEGMENT, bss_start, &mut segmap);
+
+    // Allocate segments in the order of:
+    // 1. Read-only segments (e.g., .text)
+    // 2. Read-write segments (e.g., .data)
+    // 3. Read-write segments without PRESENT flag (e.g., .bss)
+    let alloc_order = [
+        SegFlags::READ | SegFlags::PRESENT,
+        SegFlags::READ | SegFlags::WRITE | SegFlags::PRESENT,
+        SegFlags::READ | SegFlags::WRITE,
+    ];
+    let bss_flags = SegFlags::READ | SegFlags::WRITE;
+    let mut segmap: SegMap = HashMap::new();
+    let mut prev_addr = BASE_ADDR;
+    let mut output_segs = Vec::new();
+    for flags in &alloc_order {
+        // Special case for BSS or BSS like segments. The BSS segment grouping aligns to the word
+        // boundary. All other segment groupings align to the page size boundary.
+        if flags == &bss_flags {
+            prev_addr = next_aligned!(prev_addr, ADDR_SIZE);
+        } else {
+            prev_addr = next_aligned!(prev_addr, PAGE_SIZE);
+        }
+
+        if let Some(segment_groups) = group_by_segflags.get_mut(flags) {
+            for (segname, segs) in segment_groups.iter_mut() {
+                if segname == BSS_SEGMENT {
+                    let common_blk_seg = create_common_blks(objects);
+                    if let Some(common_bss_seg) = common_blk_seg {
+                        segs.push((COMMON_BLOCK_OBJECT_NAME.to_string(), common_bss_seg));
+                    }
+                }
+                let curr_addr = next_aligned!(prev_addr, ADDR_SIZE);
+                let merged_seg = merge_segments(segs, segname, curr_addr, &mut segmap);
+
+                prev_addr = curr_addr + merged_seg.len;
+                output_segs.push(merged_seg);
+            }
+        }
+    }
 
     Ok(Object {
         filename: "a.out".to_string(),
@@ -109,7 +132,7 @@ pub fn allocate(objects: &[Object]) -> anyhow::Result<Object> {
             num_segments: 3,
             ..Default::default()
         },
-        segments: vec![text_seg, data_seg, bss_seg],
+        segments: output_segs,
         ..Default::default()
     })
 }
