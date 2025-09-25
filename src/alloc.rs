@@ -1,4 +1,4 @@
-use crate::object::{Object, SegFlags, Segment, Sizes, SymbolType};
+use crate::object::{Object, SegFlags, Segment, Sizes};
 use std::collections::HashMap;
 
 const ADDR_SIZE: usize = 4;
@@ -51,7 +51,7 @@ fn create_common_blks(objects: &[Object]) -> Option<Segment> {
     let mut common_blk_lens = HashMap::new();
     for object in objects {
         for symbol in &object.symtab {
-            if matches!(symbol.symtype, SymbolType::Undefined) && symbol.value != 0 {
+            if symbol.is_common_blk() {
                 let value = common_blk_lens.entry(symbol.name.clone()).or_insert(0);
                 *value = (*value).max(symbol.value);
             }

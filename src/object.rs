@@ -68,7 +68,7 @@ impl Display for Segment {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SegNum {
     Segment(usize),
     AbsOrUndef,
@@ -83,7 +83,7 @@ impl Display for SegNum {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SymbolType {
     Defined,
     Undefined,
@@ -98,12 +98,21 @@ impl Display for SymbolType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Symbol {
     pub name: String,
     pub value: u32,
     pub segnum: SegNum,
     pub symtype: SymbolType,
+}
+
+impl Symbol {
+    pub fn is_common_blk(&self) -> bool {
+        match self.symtype {
+            SymbolType::Undefined => self.value != 0,
+            SymbolType::Defined => false,
+        }
+    }
 }
 
 impl Display for Symbol {

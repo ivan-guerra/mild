@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 mod alloc;
 mod object;
+mod symbols;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -18,9 +19,11 @@ fn main() -> anyhow::Result<()> {
         .iter()
         .map(|path| object::load_object(path))
         .collect::<Result<Vec<_>, _>>()?;
-    let allocated = alloc::allocate(&object_files)?;
+    let _allocated = alloc::allocate(&object_files)?;
+    let global_symtab = symbols::collect_global_symbols(&object_files)?;
 
-    println!("{}", allocated);
+    println!("{:#?}", global_symtab);
+    //println!("{}", allocated);
 
     Ok(())
 }
