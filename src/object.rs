@@ -55,7 +55,7 @@ pub struct Segment {
     pub name: String,
     pub address: u32,
     pub len: usize,
-    pub desc: SegFlags,
+    pub flags: SegFlags,
 }
 
 impl Display for Segment {
@@ -63,7 +63,7 @@ impl Display for Segment {
         write!(
             f,
             "Segment {{ name: {}, address: {:X}, len: {:X}, desc: {} }}",
-            self.name, self.address, self.len, self.desc
+            self.name, self.address, self.len, self.flags
         )
     }
 }
@@ -315,7 +315,7 @@ fn load_segments(contents: &[&str], sizes: &Sizes) -> anyhow::Result<Vec<Segment
             name,
             address,
             len,
-            desc,
+            flags: desc,
         });
     }
 
@@ -479,7 +479,7 @@ fn load_data(
     let mut data_idx = HEADER_SIZE + sizes.num_segments + sizes.num_symbols + sizes.num_relocs;
 
     for (segnum, segment) in segments.iter().enumerate() {
-        if !segment.desc.contains(SegFlags::PRESENT) {
+        if !segment.flags.contains(SegFlags::PRESENT) {
             continue;
         }
         if data_idx >= contents.len() {
@@ -722,13 +722,13 @@ mod tests {
         assert_eq!(result[0].name, ".text");
         assert_eq!(result[0].address, 0x1000);
         assert_eq!(result[0].len, 0x2500);
-        assert_eq!(result[0].desc, SegFlags::READ | SegFlags::PRESENT);
+        assert_eq!(result[0].flags, SegFlags::READ | SegFlags::PRESENT);
 
         assert_eq!(result[1].name, ".data");
         assert_eq!(result[1].address, 0x4000);
         assert_eq!(result[1].len, 0xC00);
         assert_eq!(
-            result[1].desc,
+            result[1].flags,
             SegFlags::READ | SegFlags::WRITE | SegFlags::PRESENT
         );
     }
@@ -879,7 +879,7 @@ mod tests {
         assert_eq!(result[0].name, ".text");
         assert_eq!(result[0].address, 0x1000);
         assert_eq!(result[0].len, 0x2500);
-        assert_eq!(result[0].desc, SegFlags::READ | SegFlags::PRESENT);
+        assert_eq!(result[0].flags, SegFlags::READ | SegFlags::PRESENT);
     }
 
     #[test]
@@ -1273,13 +1273,13 @@ mod tests {
                 name: ".text".to_string(),
                 address: 0x1000,
                 len: 0x2500,
-                desc: SegFlags::READ | SegFlags::PRESENT,
+                flags: SegFlags::READ | SegFlags::PRESENT,
             },
             Segment {
                 name: ".data".to_string(),
                 address: 0x4000,
                 len: 0xC00,
-                desc: SegFlags::READ | SegFlags::WRITE | SegFlags::PRESENT,
+                flags: SegFlags::READ | SegFlags::WRITE | SegFlags::PRESENT,
             },
         ];
         let sizes = Sizes {
@@ -1304,13 +1304,13 @@ mod tests {
                 name: ".text".to_string(),
                 address: 0x1000,
                 len: 0x2500,
-                desc: SegFlags::READ | SegFlags::WRITE,
+                flags: SegFlags::READ | SegFlags::WRITE,
             },
             Segment {
                 name: ".data".to_string(),
                 address: 0x4000,
                 len: 0xC00,
-                desc: SegFlags::READ | SegFlags::WRITE,
+                flags: SegFlags::READ | SegFlags::WRITE,
             },
         ];
         let sizes = Sizes {
@@ -1339,19 +1339,19 @@ mod tests {
                 name: ".text".to_string(),
                 address: 0x1000,
                 len: 0x2500,
-                desc: SegFlags::READ | SegFlags::PRESENT,
+                flags: SegFlags::READ | SegFlags::PRESENT,
             },
             Segment {
                 name: ".data".to_string(),
                 address: 0x4000,
                 len: 0xC00,
-                desc: SegFlags::READ | SegFlags::WRITE,
+                flags: SegFlags::READ | SegFlags::WRITE,
             },
             Segment {
                 name: ".bss".to_string(),
                 address: 0x5000,
                 len: 0x1900,
-                desc: SegFlags::READ | SegFlags::WRITE | SegFlags::PRESENT,
+                flags: SegFlags::READ | SegFlags::WRITE | SegFlags::PRESENT,
             },
         ];
         let sizes = Sizes {
@@ -1375,7 +1375,7 @@ mod tests {
             name: ".text".to_string(),
             address: 0x1000,
             len: 0x0,
-            desc: SegFlags::READ | SegFlags::PRESENT,
+            flags: SegFlags::READ | SegFlags::PRESENT,
         }];
         let sizes = Sizes {
             num_segments: 1,
@@ -1392,7 +1392,7 @@ mod tests {
             name: ".text".to_string(),
             address: 0x1000,
             len: 0x1,
-            desc: SegFlags::READ | SegFlags::PRESENT,
+            flags: SegFlags::READ | SegFlags::PRESENT,
         }];
         let sizes = Sizes {
             num_segments: 1,
@@ -1413,7 +1413,7 @@ mod tests {
             name: ".text".to_string(),
             address: 0x1000,
             len: 0x2500,
-            desc: SegFlags::READ | SegFlags::PRESENT,
+            flags: SegFlags::READ | SegFlags::PRESENT,
         }];
         let sizes = Sizes {
             num_segments: 1,
@@ -1430,7 +1430,7 @@ mod tests {
             name: ".text".to_string(),
             address: 0x1000,
             len: 0x2500,
-            desc: SegFlags::READ | SegFlags::PRESENT,
+            flags: SegFlags::READ | SegFlags::PRESENT,
         }];
         let sizes = Sizes {
             num_segments: 1,
@@ -1447,7 +1447,7 @@ mod tests {
             name: ".text".to_string(),
             address: 0x1000,
             len: 0x2500,
-            desc: SegFlags::READ | SegFlags::PRESENT,
+            flags: SegFlags::READ | SegFlags::PRESENT,
         }];
         let sizes = Sizes {
             num_segments: 1,

@@ -28,7 +28,7 @@ fn merge_segments(
     let name = segname.to_string();
     let desc = segments
         .iter()
-        .fold(SegFlags::empty(), |acc, seg| acc | seg.2.desc);
+        .fold(SegFlags::empty(), |acc, seg| acc | seg.2.flags);
 
     let mut prev_addr = start_addr;
     for (obj_filename, old_segnum, segment) in segments {
@@ -45,7 +45,7 @@ fn merge_segments(
         name,
         len,
         address: start_addr as u32,
-        desc,
+        flags: desc,
     }
 }
 
@@ -69,7 +69,7 @@ fn create_common_blks(objects: &[Object]) -> Option<Segment> {
             name: BSS_SEGMENT.to_string(),
             len: common_blk_total_len,
             address: 0,
-            desc: SegFlags::READ | SegFlags::WRITE,
+            flags: SegFlags::READ | SegFlags::WRITE,
         })
     }
 }
@@ -100,7 +100,7 @@ pub fn allocate(objects: &[Object], gsymtab: &mut GlobalSymbolTable) -> anyhow::
     for object in objects {
         for (segnum, segment) in object.segments.iter().enumerate() {
             group_by_segflags
-                .entry(segment.desc)
+                .entry(segment.flags)
                 .or_default()
                 .entry(segment.name.clone())
                 .or_default()
@@ -199,7 +199,7 @@ mod tests {
             name: name.to_string(),
             address,
             len,
-            desc,
+            flags: desc,
         }
     }
 
@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(bss_seg.name, ".bss");
         assert_eq!(bss_seg.len, 0x80);
         assert_eq!(bss_seg.address, 0);
-        assert_eq!(bss_seg.desc, SegFlags::READ | SegFlags::WRITE);
+        assert_eq!(bss_seg.flags, SegFlags::READ | SegFlags::WRITE);
     }
 
     #[test]
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(bss_seg.name, ".bss");
         assert_eq!(bss_seg.len, 0x80 + 0x40);
         assert_eq!(bss_seg.address, 0);
-        assert_eq!(bss_seg.desc, SegFlags::READ | SegFlags::WRITE);
+        assert_eq!(bss_seg.flags, SegFlags::READ | SegFlags::WRITE);
     }
 
     #[test]
@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(bss_seg.name, ".bss");
         assert_eq!(bss_seg.len, 0x120); // Should use maximum value
         assert_eq!(bss_seg.address, 0);
-        assert_eq!(bss_seg.desc, SegFlags::READ | SegFlags::WRITE);
+        assert_eq!(bss_seg.flags, SegFlags::READ | SegFlags::WRITE);
     }
 
     #[test]
@@ -342,7 +342,7 @@ mod tests {
         assert_eq!(result.name, ".text");
         assert_eq!(result.address, 0x1000);
         assert_eq!(result.len, 0);
-        assert_eq!(result.desc, SegFlags::empty());
+        assert_eq!(result.flags, SegFlags::empty());
         assert!(segmap.is_empty());
     }
 
@@ -357,7 +357,7 @@ mod tests {
         assert_eq!(result.name, ".text");
         assert_eq!(result.address, 0x1000);
         assert_eq!(result.len, 0x100);
-        assert_eq!(result.desc, SegFlags::READ);
+        assert_eq!(result.flags, SegFlags::READ);
 
         assert!(segmap.contains_key("obj1.mild"));
         assert_eq!(
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(result.name, ".text");
         assert_eq!(result.address, 0x1000);
         assert_eq!(result.len, 0x180);
-        assert_eq!(result.desc, SegFlags::READ);
+        assert_eq!(result.flags, SegFlags::READ);
 
         assert!(segmap.contains_key("obj1.mild"));
         assert!(segmap.contains_key("obj2.mild"));
@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(result.name, ".data");
         assert_eq!(result.address, 0x4000);
         assert_eq!(
-            result.desc,
+            result.flags,
             SegFlags::READ | SegFlags::WRITE | SegFlags::PRESENT
         );
     }
