@@ -19,11 +19,11 @@ fn main() -> anyhow::Result<()> {
         .iter()
         .map(|path| object::load_object(path))
         .collect::<Result<Vec<_>, _>>()?;
-    let _allocated = alloc::allocate(&object_files)?;
-    let global_symtab = symbols::collect_global_symbols(&object_files)?;
+    let mut global_symtab = symbols::collect_global_symbols(&object_files)?;
+    let allocated = alloc::allocate(&object_files, &mut global_symtab)?;
 
     println!("{:#?}", global_symtab);
-    //println!("{}", allocated);
+    println!("{}", allocated);
 
     Ok(())
 }

@@ -1,4 +1,6 @@
-use crate::object::{Object, SegFlags, Segment, Sizes};
+use crate::object::{Object, SegFlags, SegNum, Segment, Sizes};
+use crate::symbols::GlobalSymbolTable;
+use anyhow::bail;
 use std::collections::HashMap;
 
 const ADDR_SIZE: usize = 4;
@@ -14,27 +16,28 @@ macro_rules! next_aligned {
 }
 
 type ObjFilename = String;
-type SegMap = HashMap<ObjFilename, HashMap<Segment, usize>>;
+type SegMap = HashMap<ObjFilename, HashMap<SegNum, (SegNum, usize)>>;
 
 fn merge_segments(
-    segments: &[(ObjFilename, Segment)],
+    segments: &[(ObjFilename, SegNum, Segment)],
     segname: &str,
+    new_segnum: SegNum,
     start_addr: usize,
     segmap: &mut SegMap,
 ) -> Segment {
     let name = segname.to_string();
     let desc = segments
         .iter()
-        .fold(SegFlags::empty(), |acc, seg| acc | seg.1.desc);
+        .fold(SegFlags::empty(), |acc, seg| acc | seg.2.desc);
 
     let mut prev_addr = start_addr;
-    for (obj_filename, seg) in segments {
+    for (obj_filename, old_segnum, segment) in segments {
         let curr_addr = next_aligned!(prev_addr, ADDR_SIZE);
         segmap
             .entry((*obj_filename).clone())
             .or_default()
-            .insert((*seg).clone(), curr_addr);
-        prev_addr = curr_addr + seg.len;
+            .insert(*old_segnum, (new_segnum, curr_addr));
+        prev_addr = curr_addr + segment.len;
     }
     let len = prev_addr - start_addr;
 
@@ -71,19 +74,41 @@ fn create_common_blks(objects: &[Object]) -> Option<Segment> {
     }
 }
 
-pub fn allocate(objects: &[Object]) -> anyhow::Result<Object> {
-    // Group segments by their flags and names the mapping looks like:
-    // SegFlags -> (segname -> [(obj_filename, segment)])
-    let mut group_by_segflags: HashMap<SegFlags, HashMap<String, Vec<(ObjFilename, Segment)>>> =
-        HashMap::new();
+fn update_symbol_addresses(gsymtab: &mut GlobalSymbolTable, segmap: &SegMap) -> anyhow::Result<()> {
+    for (symname, entry) in gsymtab {
+        let old_segnum = &entry.symbol.segnum;
+        match segmap.get(&entry.filename).and_then(|m| m.get(old_segnum)) {
+            Some((new_segnum, addr)) => {
+                entry.symbol.segnum = *new_segnum;
+                entry.symbol.value += *addr as u32;
+            }
+            None => {
+                bail!(format!(
+                    "Failed to find segment mapping for symbol: {} in file: {} with segnum: {:?}",
+                    symname, entry.filename, old_segnum
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn allocate(objects: &[Object], gsymtab: &mut GlobalSymbolTable) -> anyhow::Result<Object> {
+    type SegGroup = (ObjFilename, SegNum, Segment);
+    type SegGroupMap = HashMap<SegFlags, HashMap<ObjFilename, Vec<SegGroup>>>;
+    let mut group_by_segflags: SegGroupMap = HashMap::new();
     for object in objects {
-        for segment in &object.segments {
+        for (segnum, segment) in object.segments.iter().enumerate() {
             group_by_segflags
                 .entry(segment.desc)
                 .or_default()
                 .entry(segment.name.clone())
                 .or_default()
-                .push((object.filename.clone(), segment.clone()));
+                .push((
+                    object.filename.clone(),
+                    SegNum::Segment(segnum + 1),
+                    segment.clone(),
+                ));
         }
     }
 
@@ -100,6 +125,7 @@ pub fn allocate(objects: &[Object]) -> anyhow::Result<Object> {
     let mut segmap: SegMap = HashMap::new();
     let mut prev_addr = BASE_ADDR;
     let mut output_segs = Vec::new();
+    let mut segment_idx = 1;
     for flags in &alloc_order {
         // Special case for BSS or BSS like segments. The BSS segment grouping aligns to the word
         // boundary. All other segment groupings align to the page size boundary.
@@ -114,17 +140,27 @@ pub fn allocate(objects: &[Object]) -> anyhow::Result<Object> {
                 if segname == BSS_SEGMENT {
                     let common_blk_seg = create_common_blks(objects);
                     if let Some(common_bss_seg) = common_blk_seg {
-                        segs.push((COMMON_BLOCK_OBJECT_NAME.to_string(), common_bss_seg));
+                        segs.push((
+                            COMMON_BLOCK_OBJECT_NAME.to_string(),
+                            SegNum::Segment(0),
+                            common_bss_seg,
+                        ));
                     }
                 }
+
                 let curr_addr = next_aligned!(prev_addr, ADDR_SIZE);
-                let merged_seg = merge_segments(segs, segname, curr_addr, &mut segmap);
+                let new_segnum = SegNum::Segment(segment_idx);
+                let merged_seg = merge_segments(segs, segname, new_segnum, curr_addr, &mut segmap);
 
                 prev_addr = curr_addr + merged_seg.len;
                 output_segs.push(merged_seg);
             }
+            segment_idx += 1;
         }
     }
+
+    // Update symbol addresses to match the allocated segments
+    update_symbol_addresses(gsymtab, &segmap)?;
 
     Ok(Object {
         filename: "a.out".to_string(),
@@ -301,7 +337,7 @@ mod tests {
         let segments = vec![];
         let mut segmap = HashMap::new();
 
-        let result = merge_segments(&segments, ".text", 0x1000, &mut segmap);
+        let result = merge_segments(&segments, ".text", SegNum::Segment(0), 0x1000, &mut segmap);
 
         assert_eq!(result.name, ".text");
         assert_eq!(result.address, 0x1000);
@@ -313,10 +349,10 @@ mod tests {
     #[test]
     fn merge_segments_single_segment_ok() {
         let segment = create_test_segment(".text", 0x2000, 0x100, SegFlags::READ);
-        let segments = vec![("obj1.mild".to_string(), segment.clone())];
+        let segments = vec![("obj1.mild".to_string(), SegNum::Segment(1), segment.clone())];
         let mut segmap = HashMap::new();
 
-        let result = merge_segments(&segments, ".text", 0x1000, &mut segmap);
+        let result = merge_segments(&segments, ".text", SegNum::Segment(0), 0x1000, &mut segmap);
 
         assert_eq!(result.name, ".text");
         assert_eq!(result.address, 0x1000);
@@ -324,7 +360,10 @@ mod tests {
         assert_eq!(result.desc, SegFlags::READ);
 
         assert!(segmap.contains_key("obj1.mild"));
-        assert_eq!(segmap["obj1.mild"][&segment], 0x1000);
+        assert_eq!(
+            segmap["obj1.mild"][&SegNum::Segment(1)],
+            (SegNum::Segment(0), 0x1000)
+        );
     }
 
     #[test]
@@ -332,12 +371,20 @@ mod tests {
         let segment1 = create_test_segment(".text", 0x2000, 0x100, SegFlags::READ);
         let segment2 = create_test_segment(".text", 0x3000, 0x80, SegFlags::READ);
         let segments = vec![
-            ("obj1.mild".to_string(), segment1.clone()),
-            ("obj2.mild".to_string(), segment2.clone()),
+            (
+                "obj1.mild".to_string(),
+                SegNum::Segment(1),
+                segment1.clone(),
+            ),
+            (
+                "obj2.mild".to_string(),
+                SegNum::Segment(2),
+                segment2.clone(),
+            ),
         ];
         let mut segmap = HashMap::new();
 
-        let result = merge_segments(&segments, ".text", 0x1000, &mut segmap);
+        let result = merge_segments(&segments, ".text", SegNum::Segment(0), 0x1000, &mut segmap);
 
         assert_eq!(result.name, ".text");
         assert_eq!(result.address, 0x1000);
@@ -346,8 +393,14 @@ mod tests {
 
         assert!(segmap.contains_key("obj1.mild"));
         assert!(segmap.contains_key("obj2.mild"));
-        assert_eq!(segmap["obj1.mild"][&segment1], 0x1000);
-        assert_eq!(segmap["obj2.mild"][&segment2], 0x1100);
+        assert_eq!(
+            segmap["obj1.mild"][&SegNum::Segment(1)],
+            (SegNum::Segment(0), 0x1000)
+        );
+        assert_eq!(
+            segmap["obj2.mild"][&SegNum::Segment(2)],
+            (SegNum::Segment(0), 0x1100)
+        );
     }
 
     #[test]
@@ -355,20 +408,34 @@ mod tests {
         let segment1 = create_test_segment(".text", 0x2000, 0x101, SegFlags::READ); // Odd length
         let segment2 = create_test_segment(".text", 0x3000, 0x80, SegFlags::READ);
         let segments = vec![
-            ("obj1.mild".to_string(), segment1.clone()),
-            ("obj2.mild".to_string(), segment2.clone()),
+            (
+                "obj1.mild".to_string(),
+                SegNum::Segment(1),
+                segment1.clone(),
+            ),
+            (
+                "obj2.mild".to_string(),
+                SegNum::Segment(2),
+                segment2.clone(),
+            ),
         ];
         let mut segmap = HashMap::new();
 
-        let result = merge_segments(&segments, ".text", 0x1000, &mut segmap);
+        let result = merge_segments(&segments, ".text", SegNum::Segment(0), 0x1000, &mut segmap);
 
         assert_eq!(result.name, ".text");
         assert_eq!(result.address, 0x1000);
 
         assert!(segmap.contains_key("obj1.mild"));
         assert!(segmap.contains_key("obj2.mild"));
-        assert_eq!(segmap["obj1.mild"][&segment1], 0x1000);
-        assert_eq!(segmap["obj2.mild"][&segment2], 0x1104); // 0x1000 + 0x101 aligned to next 4-byte boundary
+        assert_eq!(
+            segmap["obj1.mild"][&SegNum::Segment(1)],
+            (SegNum::Segment(0), 0x1000)
+        );
+        assert_eq!(
+            segmap["obj2.mild"][&SegNum::Segment(2)],
+            (SegNum::Segment(0), 0x1104)
+        ); // 0x1000 + 0x101 aligned to next 4-byte boundary
     }
 
     #[test]
@@ -377,13 +444,25 @@ mod tests {
         let segment2 = create_test_segment(".data", 0x5000, 0x80, SegFlags::WRITE);
         let segment3 = create_test_segment(".data", 0x6000, 0x40, SegFlags::PRESENT);
         let segments = vec![
-            ("obj1.mild".to_string(), segment1.clone()),
-            ("obj2.mild".to_string(), segment2.clone()),
-            ("obj3.mild".to_string(), segment3.clone()),
+            (
+                "obj1.mild".to_string(),
+                SegNum::Segment(1),
+                segment1.clone(),
+            ),
+            (
+                "obj2.mild".to_string(),
+                SegNum::Segment(2),
+                segment2.clone(),
+            ),
+            (
+                "obj3.mild".to_string(),
+                SegNum::Segment(3),
+                segment3.clone(),
+            ),
         ];
         let mut segmap = HashMap::new();
 
-        let result = merge_segments(&segments, ".data", 0x4000, &mut segmap);
+        let result = merge_segments(&segments, ".data", SegNum::Segment(0), 0x4000, &mut segmap);
 
         assert_eq!(result.name, ".data");
         assert_eq!(result.address, 0x4000);

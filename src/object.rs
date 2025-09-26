@@ -68,7 +68,7 @@ impl Display for Segment {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum SegNum {
     Segment(usize),
     AbsOrUndef,
