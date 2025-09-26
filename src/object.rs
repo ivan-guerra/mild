@@ -98,7 +98,7 @@ impl Display for SymbolType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Symbol {
     pub name: String,
     pub value: u32,
@@ -122,6 +122,17 @@ impl Display for Symbol {
             "Symbol {{ name: {}, value: {:X}, segnum: {}, symtype: {} }}",
             self.name, self.value, self.segnum, self.symtype
         )
+    }
+}
+
+impl std::fmt::Debug for Symbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Symbol")
+            .field("name", &self.name)
+            .field("value", &format_args!("{:X}", self.value))
+            .field("segnum", &self.segnum)
+            .field("symtype", &self.symtype)
+            .finish()
     }
 }
 
