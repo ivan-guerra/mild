@@ -26,7 +26,7 @@ fn merge_segments(
     segmap: &mut SegMap,
 ) -> Segment {
     let name = segname.to_string();
-    let desc = segments
+    let flags = segments
         .iter()
         .fold(SegFlags::empty(), |acc, seg| acc | seg.2.flags);
 
@@ -45,7 +45,7 @@ fn merge_segments(
         name,
         len,
         address: start_addr as u32,
-        flags: desc,
+        flags,
     }
 }
 
@@ -94,8 +94,10 @@ fn update_symbol_addresses(gsymtab: &mut GlobalSymbolTable, segmap: &SegMap) -> 
 }
 
 pub fn allocate(objects: &[Object], gsymtab: &mut GlobalSymbolTable) -> anyhow::Result<Object> {
+    type SegName = String;
     type SegGroup = (ObjFilename, SegNum, Segment);
-    type SegGroupMap = HashMap<SegFlags, HashMap<ObjFilename, Vec<SegGroup>>>;
+    type SegGroupMap = HashMap<SegFlags, HashMap<SegName, Vec<SegGroup>>>;
+
     let mut group_by_segflags: SegGroupMap = HashMap::new();
     for object in objects {
         for (segnum, segment) in object.segments.iter().enumerate() {
