@@ -49,7 +49,11 @@ fn merge_segments(
     }
 }
 
-fn create_common_blks(objects: &[Object]) -> Option<Segment> {
+fn create_common_blks(
+    objects: &[Object],
+    start_addr: usize,
+    gsymtab: &mut GlobalSymbolTable,
+) -> Option<Vec<Segment>> {
     // Map undefined symbol names with nonzero values (common blocks) to their maximum length
     let mut common_blk_lens = HashMap::new();
     for object in objects {
@@ -65,12 +69,25 @@ fn create_common_blks(objects: &[Object]) -> Option<Segment> {
     if common_blk_total_len == 0 {
         None
     } else {
-        Some(Segment {
-            name: BSS_SEGMENT.to_string(),
-            len: common_blk_total_len,
-            address: 0,
-            flags: SegFlags::READ | SegFlags::WRITE,
-        })
+        let mut common_segs = Vec::new();
+        let mut prev_addr = start_addr;
+        for (symname, len) in &common_blk_lens {
+            let curr_addr = next_aligned!(prev_addr, ADDR_SIZE);
+
+            // Save the address of the common block symbol in the global symbol table
+            if let Some(gsym) = gsymtab.get_mut(symname) {
+                gsym.symbol.value = curr_addr as u32;
+            }
+
+            common_segs.push(Segment {
+                name: BSS_SEGMENT.to_string(),
+                len: *len as usize,
+                address: curr_addr as u32,
+                flags: SegFlags::READ | SegFlags::WRITE,
+            });
+            prev_addr = curr_addr + *len as usize;
+        }
+        Some(common_segs)
     }
 }
 
@@ -80,7 +97,11 @@ fn update_symbol_addresses(gsymtab: &mut GlobalSymbolTable, segmap: &SegMap) -> 
         match segmap.get(&entry.filename).and_then(|m| m.get(old_segnum)) {
             Some((new_segnum, addr)) => {
                 entry.symbol.segnum = *new_segnum;
-                entry.symbol.value += *addr as u32;
+
+                // Common blocks had their addresses resolved during creation
+                if !entry.symbol.is_common_blk() {
+                    entry.symbol.value += *addr as u32;
+                }
             }
             None => {
                 bail!(format!(
@@ -140,13 +161,19 @@ pub fn allocate(objects: &[Object], gsymtab: &mut GlobalSymbolTable) -> anyhow::
         if let Some(segment_groups) = group_by_segflags.get_mut(flags) {
             for (segname, segs) in segment_groups.iter_mut() {
                 if segname == BSS_SEGMENT {
-                    let common_blk_seg = create_common_blks(objects);
-                    if let Some(common_bss_seg) = common_blk_seg {
-                        segs.push((
-                            COMMON_BLOCK_OBJECT_NAME.to_string(),
-                            SegNum::Segment(0),
-                            common_bss_seg,
-                        ));
+                    let end_of_bss = next_aligned!(
+                        prev_addr + segs.iter().map(|s| s.2.len).sum::<usize>(),
+                        ADDR_SIZE
+                    );
+                    let common_blk_segs = create_common_blks(objects, end_of_bss, gsymtab);
+                    if let Some(common_segs) = common_blk_segs {
+                        for (i, common_seg) in common_segs.into_iter().enumerate() {
+                            segs.push((
+                                COMMON_BLOCK_OBJECT_NAME.to_string(),
+                                SegNum::Segment(i + 1),
+                                common_seg,
+                            ));
+                        }
                     }
                 }
 
@@ -179,8 +206,8 @@ pub fn allocate(objects: &[Object], gsymtab: &mut GlobalSymbolTable) -> anyhow::
 mod tests {
     use super::*;
     use crate::object::{SegNum, Symbol, SymbolType};
+    use crate::symbols::GlobalSymbol;
 
-    // Helper function to create test objects
     fn create_test_object(filename: &str, segments: Vec<Segment>, symbols: Vec<Symbol>) -> Object {
         Object {
             filename: filename.to_string(),
@@ -196,21 +223,21 @@ mod tests {
         }
     }
 
-    fn create_test_segment(name: &str, address: u32, len: usize, desc: SegFlags) -> Segment {
-        Segment {
-            name: name.to_string(),
-            address,
-            len,
-            flags: desc,
-        }
-    }
-
     fn create_test_symbol(name: &str, value: u32, segnum: SegNum, symtype: SymbolType) -> Symbol {
         Symbol {
             name: name.to_string(),
             value,
             segnum,
             symtype,
+        }
+    }
+
+    fn create_test_segment(name: &str, address: u32, len: usize, desc: SegFlags) -> Segment {
+        Segment {
+            name: name.to_string(),
+            address,
+            len,
+            flags: desc,
         }
     }
 
@@ -226,8 +253,9 @@ mod tests {
                 SymbolType::Defined,
             )],
         )];
+        let mut gsymtab = HashMap::new();
 
-        let result = create_common_blks(&objects);
+        let result = create_common_blks(&objects, 0x2000, &mut gsymtab);
         assert!(result.is_none());
     }
 
@@ -243,8 +271,9 @@ mod tests {
                 SymbolType::Undefined,
             )],
         )];
+        let mut gsymtab = HashMap::new();
 
-        let result = create_common_blks(&objects);
+        let result = create_common_blks(&objects, 0x2000, &mut gsymtab);
         assert!(result.is_none());
     }
 
@@ -260,14 +289,31 @@ mod tests {
                 SymbolType::Undefined,
             )],
         )];
+        let mut gsymtab = HashMap::new();
+        gsymtab.insert(
+            "common_var".to_string(),
+            GlobalSymbol {
+                filename: "obj1.mild".to_string(),
+                symbol: create_test_symbol(
+                    "common_var",
+                    0x80,
+                    SegNum::AbsOrUndef,
+                    SymbolType::Undefined,
+                ),
+            },
+        );
 
-        let result = create_common_blks(&objects);
+        let result = create_common_blks(&objects, 0x2000, &mut gsymtab);
         assert!(result.is_some());
-        let bss_seg = result.unwrap();
-        assert_eq!(bss_seg.name, ".bss");
-        assert_eq!(bss_seg.len, 0x80);
-        assert_eq!(bss_seg.address, 0);
-        assert_eq!(bss_seg.flags, SegFlags::READ | SegFlags::WRITE);
+        let bss_segs = result.unwrap();
+        assert_eq!(bss_segs.len(), 1);
+        assert_eq!(bss_segs[0].name, ".bss");
+        assert_eq!(bss_segs[0].len, 0x80);
+        assert_eq!(bss_segs[0].address, 0x2000);
+        assert_eq!(bss_segs[0].flags, SegFlags::READ | SegFlags::WRITE);
+
+        // Check that the symbol address was updated
+        assert_eq!(gsymtab["common_var"].symbol.value, 0x2000);
     }
 
     #[test]
@@ -290,14 +336,46 @@ mod tests {
                 ),
             ],
         )];
+        let mut gsymtab = HashMap::new();
+        gsymtab.insert(
+            "common_var1".to_string(),
+            GlobalSymbol {
+                filename: "obj1.mild".to_string(),
+                symbol: create_test_symbol(
+                    "common_var1",
+                    0x80,
+                    SegNum::AbsOrUndef,
+                    SymbolType::Undefined,
+                ),
+            },
+        );
+        gsymtab.insert(
+            "common_var2".to_string(),
+            GlobalSymbol {
+                filename: "obj1.mild".to_string(),
+                symbol: create_test_symbol(
+                    "common_var2",
+                    0x40,
+                    SegNum::AbsOrUndef,
+                    SymbolType::Undefined,
+                ),
+            },
+        );
 
-        let result = create_common_blks(&objects);
+        let result = create_common_blks(&objects, 0x2000, &mut gsymtab);
         assert!(result.is_some());
-        let bss_seg = result.unwrap();
-        assert_eq!(bss_seg.name, ".bss");
-        assert_eq!(bss_seg.len, 0x80 + 0x40);
-        assert_eq!(bss_seg.address, 0);
-        assert_eq!(bss_seg.flags, SegFlags::READ | SegFlags::WRITE);
+        let bss_segs = result.unwrap();
+        assert_eq!(bss_segs.len(), 2);
+
+        // Check total length
+        let total_len: usize = bss_segs.iter().map(|s| s.len).sum();
+        assert_eq!(total_len, 0x80 + 0x40);
+
+        // All segments should be .bss segments
+        for seg in &bss_segs {
+            assert_eq!(seg.name, ".bss");
+            assert_eq!(seg.flags, SegFlags::READ | SegFlags::WRITE);
+        }
     }
 
     #[test]
@@ -324,14 +402,31 @@ mod tests {
                 )],
             ),
         ];
+        let mut gsymtab = HashMap::new();
+        gsymtab.insert(
+            "common_var".to_string(),
+            GlobalSymbol {
+                filename: "obj1.mild".to_string(),
+                symbol: create_test_symbol(
+                    "common_var",
+                    0x120, // Should have the maximum value
+                    SegNum::AbsOrUndef,
+                    SymbolType::Undefined,
+                ),
+            },
+        );
 
-        let result = create_common_blks(&objects);
+        let result = create_common_blks(&objects, 0x2000, &mut gsymtab);
         assert!(result.is_some());
-        let bss_seg = result.unwrap();
-        assert_eq!(bss_seg.name, ".bss");
-        assert_eq!(bss_seg.len, 0x120); // Should use maximum value
-        assert_eq!(bss_seg.address, 0);
-        assert_eq!(bss_seg.flags, SegFlags::READ | SegFlags::WRITE);
+        let bss_segs = result.unwrap();
+        assert_eq!(bss_segs.len(), 1);
+        assert_eq!(bss_segs[0].name, ".bss");
+        assert_eq!(bss_segs[0].len, 0x120); // Should use maximum value
+        assert_eq!(bss_segs[0].address, 0x2000);
+        assert_eq!(bss_segs[0].flags, SegFlags::READ | SegFlags::WRITE);
+
+        // Check that the symbol address was updated
+        assert_eq!(gsymtab["common_var"].symbol.value, 0x2000);
     }
 
     #[test]
