@@ -19,21 +19,21 @@ pub type ObjFilename = String;
 pub type GlobalSymbolTable = HashMap<ObjFilename, GlobalSymbol>;
 
 pub fn collect_global_symbols(objects: &[Object]) -> anyhow::Result<GlobalSymbolTable> {
-    let mut table: GlobalSymbolTable = HashMap::new();
+    let mut gsymtab: GlobalSymbolTable = HashMap::new();
     let mut undefined_symbols: HashSet<&str> = HashSet::new();
 
     for object in objects {
         for symbol in &object.symtab {
             match symbol.symtype {
                 SymbolType::Undefined => {
-                    if !table.contains_key(&symbol.name) && !symbol.is_common_blk() {
+                    if !gsymtab.contains_key(&symbol.name) && !symbol.is_common_blk() {
                         undefined_symbols.insert(&symbol.name);
                     }
                 }
                 SymbolType::Defined => {
                     undefined_symbols.remove(symbol.name.as_str());
 
-                    let global_sym = table.insert(
+                    let global_sym = gsymtab.insert(
                         symbol.name.clone(),
                         GlobalSymbol {
                             filename: object.filename.clone(),
@@ -61,7 +61,7 @@ pub fn collect_global_symbols(objects: &[Object]) -> anyhow::Result<GlobalSymbol
         );
     }
 
-    Ok(table)
+    Ok(gsymtab)
 }
 
 #[cfg(test)]
