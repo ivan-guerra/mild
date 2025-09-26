@@ -1,5 +1,5 @@
 use crate::object::{Object, SegFlags, SegNum, Segment, Sizes};
-use crate::symbols::GlobalSymbolTable;
+use crate::symbols::{GlobalSymbolTable, ObjFilename};
 use anyhow::bail;
 use std::collections::HashMap;
 
@@ -15,7 +15,6 @@ macro_rules! next_aligned {
     };
 }
 
-type ObjFilename = String;
 type SegMap = HashMap<ObjFilename, HashMap<SegNum, (SegNum, usize)>>;
 
 fn merge_segments(

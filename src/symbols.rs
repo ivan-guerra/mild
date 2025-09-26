@@ -15,7 +15,8 @@ impl Display for GlobalSymbol {
     }
 }
 
-pub type GlobalSymbolTable = HashMap<String, GlobalSymbol>;
+pub type ObjFilename = String;
+pub type GlobalSymbolTable = HashMap<ObjFilename, GlobalSymbol>;
 
 pub fn collect_global_symbols(objects: &[Object]) -> anyhow::Result<GlobalSymbolTable> {
     let mut table: GlobalSymbolTable = HashMap::new();
