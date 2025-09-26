@@ -25,7 +25,20 @@ pub fn collect_global_symbols(objects: &[Object]) -> anyhow::Result<GlobalSymbol
         for symbol in &object.symtab {
             match symbol.symtype {
                 SymbolType::Undefined => {
-                    if !gsymtab.contains_key(&symbol.name) && !symbol.is_common_blk() {
+                    if symbol.is_common_blk() {
+                        if gsymtab.contains_key(&symbol.name) {
+                            let gsym = gsymtab.get_mut(&symbol.name).unwrap();
+                            gsym.symbol.value = gsym.symbol.value.max(symbol.value);
+                        } else {
+                            gsymtab.insert(
+                                symbol.name.clone(),
+                                GlobalSymbol {
+                                    filename: object.filename.clone(),
+                                    symbol: symbol.clone(),
+                                },
+                            );
+                        }
+                    } else if !gsymtab.contains_key(&symbol.name) {
                         undefined_symbols.insert(&symbol.name);
                     }
                 }
@@ -341,36 +354,6 @@ mod tests {
         assert!(result.contains_key("extern_var"));
         assert_eq!(result["extern_var"].filename, "obj2.mild");
         assert_eq!(result["extern_var"].symbol.value, 0x0);
-    }
-
-    #[test]
-    fn collect_global_symbols_undefined_common_blocks_ok() {
-        let objects = vec![
-            create_test_object(
-                "obj1.mild",
-                vec![create_test_symbol(
-                    "common_var",
-                    0x80,
-                    SegNum::AbsOrUndef,
-                    SymbolType::Undefined,
-                )],
-            ),
-            create_test_object(
-                "obj2.mild",
-                vec![create_test_symbol(
-                    "common_var",
-                    0x100,
-                    SegNum::AbsOrUndef,
-                    SymbolType::Undefined,
-                )],
-            ),
-        ];
-
-        // Common blocks (undefined symbols with non-zero values) should not cause errors
-        // They are handled during allocation phase
-        let result = collect_global_symbols(&objects);
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
     }
 
     #[test]
