@@ -1,0 +1,9 @@
+[package]
+name = "librarian"
+version = "0.1.0"
+edition = "2024"
+description = "A librarian for a machine independent object format."
+license = "Unlicense"
+
+[dependencies]
+mild = { path = "../mild" }
