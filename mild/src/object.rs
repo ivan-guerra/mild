@@ -50,9 +50,11 @@ impl Display for SegFlags {
     }
 }
 
+pub type SegName = String;
+
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Segment {
-    pub name: String,
+    pub name: SegName,
     pub address: u32,
     pub len: usize,
     pub flags: SegFlags,

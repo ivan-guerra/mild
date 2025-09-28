@@ -1,12 +1,12 @@
-use crate::object::{Object, SegFlags, SegNum, Segment, Sizes};
+use crate::object::{Object, SegFlags, SegName, SegNum, Segment, Sizes, Symbol, SymbolName};
 use crate::symbols::GlobalSymbolTable;
 use anyhow::bail;
 use std::collections::HashMap;
 
 const ADDR_SIZE: usize = 4;
 const PAGE_SIZE: usize = 0x1000;
-const BSS_SEGMENT: &str = ".bss";
 const BASE_ADDR: usize = 0x1000;
+const BSS_SEG_NAME: &str = ".bss";
 const COMMON_BLOCK_OBJECT_NAME: &str = "common_blk";
 
 macro_rules! next_aligned {
@@ -16,35 +16,41 @@ macro_rules! next_aligned {
 }
 
 type ObjFilename = String;
-type SegMap = HashMap<ObjFilename, HashMap<SegNum, (SegNum, usize)>>;
+type SymAddr = u32;
+type SegMap = HashMap<ObjFilename, HashMap<SegNum, (SegNum, SymAddr)>>;
+
+struct SegGroup {
+    filename: ObjFilename,
+    old_segnum: SegNum,
+    segment: Segment,
+}
 
 fn merge_segments(
-    segments: &[(ObjFilename, SegNum, Segment)],
+    seg_groups: &[SegGroup],
     segname: &str,
     new_segnum: SegNum,
     start_addr: usize,
     segmap: &mut SegMap,
 ) -> Segment {
     let name = segname.to_string();
-    let flags = segments
+    let flags = seg_groups
         .iter()
-        .fold(SegFlags::empty(), |acc, seg| acc | seg.2.flags);
+        .fold(SegFlags::empty(), |acc, seg| acc | seg.segment.flags);
 
     let mut prev_addr = start_addr;
-    for (obj_filename, old_segnum, segment) in segments {
+    for group in seg_groups {
         let curr_addr = next_aligned!(prev_addr, ADDR_SIZE);
-        segmap
-            .entry((*obj_filename).clone())
-            .or_default()
-            .insert(*old_segnum, (new_segnum, curr_addr));
-        prev_addr = curr_addr + segment.len;
+        segmap.entry(group.filename.clone()).or_default().insert(
+            group.old_segnum,
+            (new_segnum, curr_addr.try_into().unwrap()),
+        );
+        prev_addr = curr_addr + group.segment.len;
     }
-    let len = prev_addr - start_addr;
 
     Segment {
         name,
-        len,
-        address: start_addr as u32,
+        len: prev_addr - start_addr,
+        address: start_addr.try_into().unwrap(),
         flags,
     }
 }
@@ -55,40 +61,47 @@ fn create_common_blks(
     gsymtab: &mut GlobalSymbolTable,
 ) -> Option<Vec<Segment>> {
     // Map undefined symbol names with nonzero values (common blocks) to their maximum length
-    let mut common_blk_lens = HashMap::new();
-    for object in objects {
-        for symbol in &object.symtab {
-            if symbol.is_common_blk() {
-                let value = common_blk_lens.entry(symbol.name.clone()).or_insert(0);
-                *value = (*value).max(symbol.value);
-            }
-        }
+    let common_blks: Vec<&Symbol> = objects
+        .iter()
+        .flat_map(|obj| obj.symtab.iter().filter(|sym| sym.is_common_blk()))
+        .collect();
+    let common_blk_lens: HashMap<SymbolName, usize> =
+        common_blks.iter().fold(HashMap::new(), |mut acc, sym| {
+            let blk_size: usize = sym.value.try_into().unwrap();
+            acc.entry(sym.name.clone())
+                .and_modify(|size| *size = (*size).max(blk_size))
+                .or_insert(blk_size);
+            acc
+        });
+
+    if common_blk_lens.is_empty() {
+        return None;
     }
 
-    let common_blk_total_len = common_blk_lens.values().sum::<u32>() as usize;
-    if common_blk_total_len == 0 {
-        None
-    } else {
-        let mut common_segs = Vec::new();
-        let mut prev_addr = start_addr;
-        for (symname, len) in &common_blk_lens {
+    let mut prev_addr = start_addr;
+    let common_segs = common_blk_lens
+        .iter()
+        .map(|(symname, len)| {
             let curr_addr = next_aligned!(prev_addr, ADDR_SIZE);
 
             // Save the address of the common block symbol in the global symbol table
             if let Some(gsym) = gsymtab.get_mut(symname) {
-                gsym.symbol.value = curr_addr as u32;
+                gsym.symbol.value = curr_addr.try_into().unwrap();
             }
 
-            common_segs.push(Segment {
-                name: BSS_SEGMENT.to_string(),
-                len: *len as usize,
-                address: curr_addr as u32,
+            let segment = Segment {
+                name: BSS_SEG_NAME.to_string(),
+                len: *len,
+                address: curr_addr.try_into().unwrap(),
                 flags: SegFlags::READ | SegFlags::WRITE,
-            });
-            prev_addr = curr_addr + *len as usize;
-        }
-        Some(common_segs)
-    }
+            };
+
+            prev_addr = curr_addr + len;
+            segment
+        })
+        .collect();
+
+    Some(common_segs)
 }
 
 fn update_symbol_addresses(gsymtab: &mut GlobalSymbolTable, segmap: &SegMap) -> anyhow::Result<()> {
@@ -100,7 +113,7 @@ fn update_symbol_addresses(gsymtab: &mut GlobalSymbolTable, segmap: &SegMap) -> 
 
                 // Common blocks had their addresses resolved during creation
                 if !entry.symbol.is_common_blk() {
-                    entry.symbol.value += *addr as u32;
+                    entry.symbol.value += *addr;
                 }
             }
             None => {
@@ -115,8 +128,6 @@ fn update_symbol_addresses(gsymtab: &mut GlobalSymbolTable, segmap: &SegMap) -> 
 }
 
 pub fn allocate(objects: &[Object], gsymtab: &mut GlobalSymbolTable) -> anyhow::Result<Object> {
-    type SegName = String;
-    type SegGroup = (ObjFilename, SegNum, Segment);
     type SegGroupMap = HashMap<SegFlags, HashMap<SegName, Vec<SegGroup>>>;
 
     let mut group_by_segflags: SegGroupMap = HashMap::new();
@@ -127,11 +138,11 @@ pub fn allocate(objects: &[Object], gsymtab: &mut GlobalSymbolTable) -> anyhow::
                 .or_default()
                 .entry(segment.name.clone())
                 .or_default()
-                .push((
-                    object.filename.clone(),
-                    SegNum::Segment(segnum + 1),
-                    segment.clone(),
-                ));
+                .push(SegGroup {
+                    filename: object.filename.clone(),
+                    old_segnum: SegNum::Segment(segnum + 1),
+                    segment: segment.clone(),
+                });
         }
     }
 
@@ -160,19 +171,18 @@ pub fn allocate(objects: &[Object], gsymtab: &mut GlobalSymbolTable) -> anyhow::
 
         if let Some(segment_groups) = group_by_segflags.get_mut(flags) {
             for (segname, segs) in segment_groups.iter_mut() {
-                if segname == BSS_SEGMENT {
+                if segname == BSS_SEG_NAME {
                     let end_of_bss = next_aligned!(
-                        prev_addr + segs.iter().map(|s| s.2.len).sum::<usize>(),
+                        prev_addr + segs.iter().map(|s| s.segment.len).sum::<usize>(),
                         ADDR_SIZE
                     );
-                    let common_blk_segs = create_common_blks(objects, end_of_bss, gsymtab);
-                    if let Some(common_segs) = common_blk_segs {
+                    if let Some(common_segs) = create_common_blks(objects, end_of_bss, gsymtab) {
                         for (i, common_seg) in common_segs.into_iter().enumerate() {
-                            segs.push((
-                                COMMON_BLOCK_OBJECT_NAME.to_string(),
-                                SegNum::Segment(i + 1),
-                                common_seg,
-                            ));
+                            segs.push(SegGroup {
+                                filename: COMMON_BLOCK_OBJECT_NAME.to_string(),
+                                old_segnum: SegNum::Segment(i + 1),
+                                segment: common_seg,
+                            });
                         }
                     }
                 }
@@ -188,16 +198,18 @@ pub fn allocate(objects: &[Object], gsymtab: &mut GlobalSymbolTable) -> anyhow::
         }
     }
 
-    // Update symbol addresses to match the allocated segments
+    // Update global symbol addresses to match the allocated segments
     update_symbol_addresses(gsymtab, &segmap)?;
 
     Ok(Object {
         filename: "a.out".to_string(),
         sizes: Sizes {
             num_segments: 3,
+            num_symbols: gsymtab.len(),
             ..Default::default()
         },
         segments: output_segs,
+        symtab: gsymtab.values().map(|gsym| gsym.symbol.clone()).collect(),
         ..Default::default()
     })
 }
@@ -446,7 +458,11 @@ mod tests {
     #[test]
     fn merge_segments_single_segment_ok() {
         let segment = create_test_segment(".text", 0x2000, 0x100, SegFlags::READ);
-        let segments = vec![("obj1.mild".to_string(), SegNum::Segment(1), segment.clone())];
+        let segments = vec![SegGroup {
+            filename: "obj1.mild".to_string(),
+            old_segnum: SegNum::Segment(1),
+            segment: segment.clone(),
+        }];
         let mut segmap = HashMap::new();
 
         let result = merge_segments(&segments, ".text", SegNum::Segment(0), 0x1000, &mut segmap);
@@ -468,16 +484,16 @@ mod tests {
         let segment1 = create_test_segment(".text", 0x2000, 0x100, SegFlags::READ);
         let segment2 = create_test_segment(".text", 0x3000, 0x80, SegFlags::READ);
         let segments = vec![
-            (
-                "obj1.mild".to_string(),
-                SegNum::Segment(1),
-                segment1.clone(),
-            ),
-            (
-                "obj2.mild".to_string(),
-                SegNum::Segment(2),
-                segment2.clone(),
-            ),
+            SegGroup {
+                filename: "obj1.mild".to_string(),
+                old_segnum: SegNum::Segment(1),
+                segment: segment1.clone(),
+            },
+            SegGroup {
+                filename: "obj2.mild".to_string(),
+                old_segnum: SegNum::Segment(2),
+                segment: segment2.clone(),
+            },
         ];
         let mut segmap = HashMap::new();
 
@@ -505,16 +521,16 @@ mod tests {
         let segment1 = create_test_segment(".text", 0x2000, 0x101, SegFlags::READ); // Odd length
         let segment2 = create_test_segment(".text", 0x3000, 0x80, SegFlags::READ);
         let segments = vec![
-            (
-                "obj1.mild".to_string(),
-                SegNum::Segment(1),
-                segment1.clone(),
-            ),
-            (
-                "obj2.mild".to_string(),
-                SegNum::Segment(2),
-                segment2.clone(),
-            ),
+            SegGroup {
+                filename: "obj1.mild".to_string(),
+                old_segnum: SegNum::Segment(1),
+                segment: segment1.clone(),
+            },
+            SegGroup {
+                filename: "obj2.mild".to_string(),
+                old_segnum: SegNum::Segment(2),
+                segment: segment2.clone(),
+            },
         ];
         let mut segmap = HashMap::new();
 
@@ -541,21 +557,21 @@ mod tests {
         let segment2 = create_test_segment(".data", 0x5000, 0x80, SegFlags::WRITE);
         let segment3 = create_test_segment(".data", 0x6000, 0x40, SegFlags::PRESENT);
         let segments = vec![
-            (
-                "obj1.mild".to_string(),
-                SegNum::Segment(1),
-                segment1.clone(),
-            ),
-            (
-                "obj2.mild".to_string(),
-                SegNum::Segment(2),
-                segment2.clone(),
-            ),
-            (
-                "obj3.mild".to_string(),
-                SegNum::Segment(3),
-                segment3.clone(),
-            ),
+            SegGroup {
+                filename: "obj1.mild".to_string(),
+                old_segnum: SegNum::Segment(1),
+                segment: segment1.clone(),
+            },
+            SegGroup {
+                filename: "obj2.mild".to_string(),
+                old_segnum: SegNum::Segment(2),
+                segment: segment2.clone(),
+            },
+            SegGroup {
+                filename: "obj3.mild".to_string(),
+                old_segnum: SegNum::Segment(3),
+                segment: segment3.clone(),
+            },
         ];
         let mut segmap = HashMap::new();
 
