@@ -98,9 +98,11 @@ impl Display for SymbolType {
     }
 }
 
+pub type SymbolName = String;
+
 #[derive(Clone)]
 pub struct Symbol {
-    pub name: String,
+    pub name: SymbolName,
     pub value: u32,
     pub segnum: SegNum,
     pub symtype: SymbolType,

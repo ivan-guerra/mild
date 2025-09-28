@@ -1,4 +1,4 @@
-use crate::object::{Object, Symbol, SymbolType};
+use crate::object::{Object, Symbol, SymbolName, SymbolType};
 use anyhow::bail;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
@@ -15,7 +15,7 @@ impl Display for GlobalSymbol {
     }
 }
 
-pub type GlobalSymbolTable = HashMap<String, GlobalSymbol>;
+pub type GlobalSymbolTable = HashMap<SymbolName, GlobalSymbol>;
 
 pub fn collect_global_symbols(objects: &[Object]) -> anyhow::Result<GlobalSymbolTable> {
     let mut gsymtab: GlobalSymbolTable = HashMap::new();
@@ -26,39 +26,39 @@ pub fn collect_global_symbols(objects: &[Object]) -> anyhow::Result<GlobalSymbol
             match symbol.symtype {
                 SymbolType::Undefined => {
                     if symbol.is_common_blk() {
-                        if gsymtab.contains_key(&symbol.name) {
-                            let gsym = gsymtab.get_mut(&symbol.name).unwrap();
-                            gsym.symbol.value = gsym.symbol.value.max(symbol.value);
-                        } else {
-                            gsymtab.insert(
-                                symbol.name.clone(),
-                                GlobalSymbol {
-                                    filename: object.filename.clone(),
-                                    symbol: symbol.clone(),
-                                },
-                            );
-                        }
+                        // For common blocks, keep the one with the maximum value
+                        gsymtab
+                            .entry(symbol.name.clone())
+                            .and_modify(|gsym| {
+                                gsym.symbol.value = gsym.symbol.value.max(symbol.value)
+                            })
+                            .or_insert_with(|| GlobalSymbol {
+                                filename: object.filename.clone(),
+                                symbol: symbol.clone(),
+                            });
                     } else if !gsymtab.contains_key(&symbol.name) {
+                        // Track regular undefined symbols for later validation
                         undefined_symbols.insert(&symbol.name);
                     }
                 }
                 SymbolType::Defined => {
                     undefined_symbols.remove(symbol.name.as_str());
 
-                    let global_sym = gsymtab.insert(
-                        symbol.name.clone(),
-                        GlobalSymbol {
-                            filename: object.filename.clone(),
-                            symbol: symbol.clone(),
-                        },
-                    );
-
-                    if let Some(gsym) = global_sym {
-                        bail!(
-                            "multiple definition of '{}', first defined here '{}'",
-                            gsym.symbol.name,
-                            gsym.filename,
-                        );
+                    match gsymtab.entry(symbol.name.clone()) {
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(GlobalSymbol {
+                                filename: object.filename.clone(),
+                                symbol: symbol.clone(),
+                            });
+                        }
+                        std::collections::hash_map::Entry::Occupied(entry) => {
+                            let existing = entry.get();
+                            bail!(
+                                "multiple definition of '{}', first defined here '{}'",
+                                existing.symbol.name,
+                                existing.filename,
+                            );
+                        }
                     }
                 }
             }
