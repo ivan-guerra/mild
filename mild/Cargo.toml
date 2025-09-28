@@ -1,0 +1,11 @@
+[package]
+name = "mild"
+version = "0.1.0"
+edition = "2024"
+description = "A linker for a machine independent object format."
+license = "Unlicense"
+
+[dependencies]
+anyhow = "1.0"
+clap = {version = "4.5", features = ["derive"]}
+bitflags = "2.9"
