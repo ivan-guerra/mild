@@ -40,7 +40,36 @@ fn cp_to_lib(lib_path: &Path, obj_path: &Path) -> anyhow::Result<PathBuf> {
     Ok(dest_path)
 }
 
-fn rm_object(lib_path: &Path, obj_path: &Path) -> anyhow::Result<()> {
+fn add_module(lib_path: &Path, obj_path: &Path) -> anyhow::Result<()> {
+    let archived_obj_path = cp_to_lib(lib_path, obj_path)?;
+    if archived_obj_path.exists() {
+        anyhow::bail!(
+            "Object file '{}' already exists in library path: {}",
+            obj_path.display(),
+            archived_obj_path.display()
+        );
+    }
+
+    // For each global symbol, create a symlink in lib_path pointing to the copied object file
+    let sym_names = get_symbol_names(&archived_obj_path)?;
+    for sym_name in &sym_names {
+        let symbol_path = lib_path.join(sym_name);
+        if !symbol_path.exists() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&archived_obj_path, symbol_path).with_context(|| {
+                format!(
+                    "Failed to create symlink for symbol {} in {}",
+                    sym_name,
+                    lib_path.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn rm_module(lib_path: &Path, obj_path: &Path) -> anyhow::Result<()> {
     let archived_obj_path = lib_path.join(obj_path.file_name().with_context(|| {
         format!(
             "Failed to get file name from object path: {}",
@@ -82,7 +111,11 @@ fn rm_object(lib_path: &Path, obj_path: &Path) -> anyhow::Result<()> {
 }
 
 pub fn create_lib(lib_path: &Path, obj_paths: &Vec<PathBuf>) -> anyhow::Result<()> {
-    // Create the output library directory if it doesn't exist
+    if lib_path.exists() {
+        anyhow::bail!("Output library path already exists: {}", lib_path.display());
+    }
+
+    // Create the output library directory
     std::fs::create_dir_all(lib_path).with_context(|| {
         format!(
             "Failed to create output library path: {}",
@@ -91,24 +124,7 @@ pub fn create_lib(lib_path: &Path, obj_paths: &Vec<PathBuf>) -> anyhow::Result<(
     })?;
 
     for obj_path in obj_paths {
-        // Copy each object file to the output_path
-        let archived_obj_path = cp_to_lib(lib_path, obj_path)?;
-
-        // For each global symbol, create a symlink in lib_path pointing to the copied object file
-        let sym_names = get_symbol_names(&archived_obj_path)?;
-        for sym_name in &sym_names {
-            let symbol_path = lib_path.join(sym_name);
-            if !symbol_path.exists() {
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(&archived_obj_path, symbol_path).with_context(|| {
-                    format!(
-                        "Failed to create symlink for symbol {} in {}",
-                        sym_name,
-                        lib_path.display()
-                    )
-                })?;
-            }
-        }
+        add_module(lib_path, obj_path)?;
     }
 
     Ok(())
@@ -116,7 +132,15 @@ pub fn create_lib(lib_path: &Path, obj_paths: &Vec<PathBuf>) -> anyhow::Result<(
 
 pub fn rm_modules(lib_path: &Path, obj_paths: &Vec<PathBuf>) -> anyhow::Result<()> {
     for obj_path in obj_paths {
-        rm_object(lib_path, obj_path)?;
+        rm_module(lib_path, obj_path)?;
+    }
+
+    Ok(())
+}
+
+pub fn add_modules(lib_path: &Path, obj_paths: &Vec<PathBuf>) -> anyhow::Result<()> {
+    for obj_path in obj_paths {
+        add_module(lib_path, obj_path)?;
     }
 
     Ok(())
