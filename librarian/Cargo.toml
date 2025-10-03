@@ -7,3 +7,5 @@ license = "Unlicense"
 
 [dependencies]
 mild = { path = "../mild" }
+anyhow = "1.0"
+clap = {version = "4.5", features = ["derive"]}
