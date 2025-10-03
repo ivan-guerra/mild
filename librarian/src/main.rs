@@ -12,21 +12,35 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum LibrarianCmds {
-    #[command(about = "Create a mild lib from one or more object files.")]
-    Create(LibArgs),
-    #[command(about = "Remove one or more object files from a mild lib.")]
-    Remove(LibArgs),
-    #[command(about = "Add one or more object files to a mild lib.")]
-    Add(LibArgs),
+    #[command(about = "Create a mild lib.")]
+    Create(CommonArgs),
+    #[command(about = "Remove modules.")]
+    Rm(CommonArgs),
+    #[command(about = "Add modules.")]
+    Add(CommonArgs),
+    #[command(about = "Replace one module with another.")]
+    Replace(ReplaceArgs),
 }
 
 #[derive(Args)]
-struct LibArgs {
-    #[arg(help = "output library path")]
+struct CommonArgs {
+    #[arg(help = "library path")]
     lib_path: PathBuf,
 
     #[arg(help = "object file path(s)", required = true, num_args = 1..)]
     obj_paths: Vec<PathBuf>,
+}
+
+#[derive(Args)]
+struct ReplaceArgs {
+    #[arg(help = "library path")]
+    lib_path: PathBuf,
+
+    #[arg(help = "object file path to be replaced")]
+    old_obj: PathBuf,
+
+    #[arg(help = "object file path to replace with")]
+    new_obj: PathBuf,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -37,7 +51,7 @@ fn main() -> anyhow::Result<()> {
                 format!("Failed to create library at {}", args.lib_path.display())
             })?;
         }
-        LibrarianCmds::Remove(args) => {
+        LibrarianCmds::Rm(args) => {
             librarian::rm_modules(&args.lib_path, &args.obj_paths).with_context(|| {
                 format!(
                     "Failed to remove modules from library at {}",
@@ -52,6 +66,26 @@ fn main() -> anyhow::Result<()> {
                     args.lib_path.display()
                 )
             })?;
+        }
+        LibrarianCmds::Replace(args) => {
+            librarian::rm_modules(&args.lib_path, &vec![args.old_obj.clone()]).with_context(
+                || {
+                    format!(
+                        "Failed to replace module {} in library at {}",
+                        args.old_obj.display(),
+                        args.lib_path.display()
+                    )
+                },
+            )?;
+            librarian::add_modules(&args.lib_path, &vec![args.new_obj.clone()]).with_context(
+                || {
+                    format!(
+                        "Failed to replace module {} in library at {}",
+                        args.new_obj.display(),
+                        args.lib_path.display()
+                    )
+                },
+            )?;
         }
     }
 

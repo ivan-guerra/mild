@@ -18,7 +18,7 @@ fn get_symbol_names(archived_obj_path: &Path) -> anyhow::Result<Vec<String>> {
     Ok(gsymtab.keys().cloned().collect())
 }
 
-fn cp_to_lib(lib_path: &Path, obj_path: &Path) -> anyhow::Result<PathBuf> {
+fn add_module(lib_path: &Path, obj_path: &Path) -> anyhow::Result<()> {
     let file_name = obj_path
         .file_name()
         .with_context(|| {
@@ -28,20 +28,8 @@ fn cp_to_lib(lib_path: &Path, obj_path: &Path) -> anyhow::Result<PathBuf> {
             )
         })?
         .to_owned();
-    let dest_path = lib_path.join(file_name);
-    std::fs::copy(obj_path, &dest_path).with_context(|| {
-        format!(
-            "Failed to copy object file from {} to {}",
-            obj_path.display(),
-            dest_path.display()
-        )
-    })?;
+    let archived_obj_path = lib_path.join(file_name);
 
-    Ok(dest_path)
-}
-
-fn add_module(lib_path: &Path, obj_path: &Path) -> anyhow::Result<()> {
-    let archived_obj_path = cp_to_lib(lib_path, obj_path)?;
     if archived_obj_path.exists() {
         anyhow::bail!(
             "Object file '{}' already exists in library path: {}",
@@ -49,6 +37,15 @@ fn add_module(lib_path: &Path, obj_path: &Path) -> anyhow::Result<()> {
             archived_obj_path.display()
         );
     }
+
+    // Copy the object file to the library path
+    std::fs::copy(obj_path, &archived_obj_path).with_context(|| {
+        format!(
+            "Failed to copy object file from {} to {}",
+            obj_path.display(),
+            archived_obj_path.display()
+        )
+    })?;
 
     // For each global symbol, create a symlink in lib_path pointing to the copied object file
     let sym_names = get_symbol_names(&archived_obj_path)?;
