@@ -23,9 +23,9 @@ fn cp_to_lib(lib_path: &Path, obj_path: &Path) -> anyhow::Result<PathBuf> {
     Ok(dest_path)
 }
 
-pub fn create_initial_lib(lib_path: PathBuf, obj_paths: Vec<PathBuf>) -> anyhow::Result<()> {
+pub fn create_initial_lib(lib_path: &Path, obj_paths: &Vec<PathBuf>) -> anyhow::Result<()> {
     // Create the output library directory if it doesn't exist
-    std::fs::create_dir_all(&lib_path).with_context(|| {
+    std::fs::create_dir_all(lib_path).with_context(|| {
         format!(
             "Failed to create output library path: {}",
             lib_path.display()
@@ -34,10 +34,10 @@ pub fn create_initial_lib(lib_path: PathBuf, obj_paths: Vec<PathBuf>) -> anyhow:
 
     for obj_path in obj_paths {
         // Copy each object file to the output_path
-        let archived_obj_path = cp_to_lib(&lib_path, &obj_path)?;
+        let archived_obj_path = cp_to_lib(lib_path, obj_path)?;
 
         // Load the object file and collect its global symbols
-        let object = mild::load_object(&obj_path)
+        let object = mild::load_object(obj_path)
             .with_context(|| format!("Failed to load object file: {}", obj_path.display()))?;
         let gsymtab = mild::collect_global_symbols(&[object]).with_context(|| {
             format!(
