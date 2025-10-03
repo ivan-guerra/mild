@@ -21,7 +21,7 @@ struct CreateArgs {
     #[arg(help = "output library path")]
     lib_path: PathBuf,
 
-    #[arg(help = "object files")]
+    #[arg(help = "object files", required = true, num_args = 1..)]
     obj_paths: Vec<PathBuf>,
 }
 
@@ -31,7 +31,7 @@ struct RemoveArgs {
     #[arg(help = "output library path")]
     lib_path: PathBuf,
 
-    #[arg(help = "object files")]
+    #[arg(help = "object files", required = true, num_args = 1..)]
     obj_paths: Vec<PathBuf>,
 }
 
